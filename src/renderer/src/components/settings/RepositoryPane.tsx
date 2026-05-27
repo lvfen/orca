@@ -27,7 +27,7 @@ type RepositoryPaneProps = {
   hooksInspectionReady: boolean
   mayNeedUpdate: boolean
   updateRepo: (repoId: string, updates: Partial<Repo>) => void
-  removeRepo: (repoId: string) => void
+  removeProject: (repoId: string) => void
 }
 
 export function RepositoryPane({
@@ -37,7 +37,7 @@ export function RepositoryPane({
   hooksInspectionReady,
   mayNeedUpdate,
   updateRepo,
-  removeRepo
+  removeProject
 }: RepositoryPaneProps): React.JSX.Element {
   const isFolder = isFolderRepo(repo)
   const searchQuery = useAppStore((state) => state.settingsSearchQuery)
@@ -45,9 +45,9 @@ export function RepositoryPane({
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null)
   const [copiedTemplate, setCopiedTemplate] = useState(false)
 
-  const handleRemoveRepo = (repoId: string) => {
+  const handleRemoveProject = (repoId: string) => {
     if (confirmingRemove === repoId) {
-      removeRepo(repoId)
+      removeProject(repoId)
       setConfirmingRemove(null)
       return
     }
@@ -139,7 +139,7 @@ export function RepositoryPane({
             <Button
               variant={confirmingRemove === repo.id ? 'destructive' : 'outline'}
               size="sm"
-              onClick={() => handleRemoveRepo(repo.id)}
+              onClick={() => handleRemoveProject(repo.id)}
               onBlur={() => setConfirmingRemove(null)}
               className="gap-2"
             >

@@ -729,7 +729,7 @@ export function FloatingTerminalPanel({
         context,
         terminalShortcutPolicy: state.settings?.terminalShortcutPolicy
       }
-      const nativeEvent = event.nativeEvent ?? event
+      const nativeEvent = event.nativeEvent
       const matches = (actionId: KeybindingActionId): boolean =>
         keybindingMatchesAction(actionId, nativeEvent, platform, state.keybindings, matchOptions)
 

@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from 'node:crypto'
 import {
-  createReadStream,
-  createWriteStream,
   existsSync,
   mkdtempSync,
   readdirSync,
@@ -12,12 +9,9 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs'
-import { get as httpGet } from 'node:http'
-import { get as httpsGet } from 'node:https'
 import { createRequire } from 'node:module'
 import { platform as osPlatform, tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
-import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
@@ -25,12 +19,14 @@ const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const electronPackageDir = resolve(projectDir, 'node_modules/electron')
 const electronRequire = createRequire(resolve(electronPackageDir, 'package.json'))
 const { version: electronVersion } = electronRequire('./package.json')
+const { downloadArtifact } = electronRequire('@electron/get')
 const extract = electronRequire('extract-zip')
 const platformPath = getElectronPlatformPath()
-const MAX_DOWNLOAD_REDIRECTS = 5
 
 main().catch((error) => {
+  console.error('[electron-package] Failed to install Electron package binary.')
   console.error(error)
+  logElectronInstallDiagnostics()
   process.exit(1)
 })
 
@@ -85,13 +81,18 @@ function repairElectronPathFile() {
 
 async function installElectronPackageBinary() {
   const electronDistDir = resolve(electronPackageDir, 'dist')
-  const artifactName = getElectronArtifactName()
   const tempDir = mkdtempSync(resolve(tmpdir(), 'orca-electron-'))
-  const zipPath = resolve(tempDir, artifactName)
 
   try {
-    await downloadElectronArtifact(artifactName, zipPath)
-    await verifyElectronArtifactChecksum(artifactName, zipPath)
+    const zipPath = await downloadArtifact({
+      version: electronVersion,
+      artifactName: 'electron',
+      platform: process.env.npm_config_platform || osPlatform(),
+      arch: process.env.npm_config_arch || process.arch,
+      force: true,
+      tempDirectory: tempDir,
+      ...(shouldUseRemoteChecksums() ? {} : { checksums: electronRequire('./checksums.json') })
+    })
 
     rmSync(electronDistDir, { recursive: true, force: true })
     await extract(zipPath, { dir: electronDistDir })
@@ -105,92 +106,11 @@ async function installElectronPackageBinary() {
   }
 }
 
-async function downloadElectronArtifact(artifactName, zipPath) {
-  const artifactUrl = new URL(`v${electronVersion}/${artifactName}`, getElectronReleaseBaseUrl())
-  console.log(`[electron-package] Downloading ${artifactUrl}`)
-
-  await downloadUrlToFile(artifactUrl, zipPath, artifactName)
-}
-
-async function downloadUrlToFile(url, zipPath, artifactName, redirectCount = 0) {
-  const response = await requestUrl(url)
-  const status = response.statusCode ?? 0
-
-  if (status >= 300 && status < 400 && response.headers.location) {
-    response.resume()
-    if (redirectCount >= MAX_DOWNLOAD_REDIRECTS) {
-      throw new Error(`Failed to download ${artifactName}: too many redirects`)
-    }
-
-    const nextUrl = new URL(response.headers.location, url)
-    console.log(`[electron-package] Following redirect to ${nextUrl.origin}${nextUrl.pathname}`)
-    await downloadUrlToFile(nextUrl, zipPath, artifactName, redirectCount + 1)
-    return
-  }
-
-  if (status < 200 || status >= 300) {
-    response.resume()
-    throw new Error(
-      `Failed to download ${artifactName}: ${status} ${response.statusMessage ?? ''}`.trim()
-    )
-  }
-
-  await pipeline(response, createWriteStream(zipPath))
-}
-
-function requestUrl(url) {
-  const get = url.protocol === 'http:' ? httpGet : url.protocol === 'https:' ? httpsGet : undefined
-  if (!get) {
-    throw new Error(`Unsupported Electron download protocol: ${url.protocol}`)
-  }
-
-  return new Promise((resolve, reject) => {
-    const request = get(
-      url,
-      {
-        headers: {
-          'user-agent': 'orca-electron-package-installer'
-        }
-      },
-      resolve
-    )
-    request.on('error', reject)
-  })
-}
-
-async function verifyElectronArtifactChecksum(artifactName, zipPath) {
-  if (
+function shouldUseRemoteChecksums() {
+  return Boolean(
     process.env.electron_use_remote_checksums ||
-    process.env.npm_config_electron_use_remote_checksums
-  ) {
-    return
-  }
-
-  const expected = electronRequire('./checksums.json')[artifactName]
-  if (!expected) {
-    throw new Error(`Missing Electron checksum for ${artifactName}`)
-  }
-
-  const hash = createHash('sha256')
-  for await (const chunk of createReadStream(zipPath)) {
-    hash.update(chunk)
-  }
-  const actual = hash.digest('hex')
-  if (actual !== expected) {
-    throw new Error(`Checksum mismatch for ${artifactName}: expected ${expected}, got ${actual}`)
-  }
-}
-
-function getElectronArtifactName() {
-  return `electron-v${electronVersion}-${process.env.npm_config_platform || osPlatform()}-${
-    process.env.npm_config_arch || process.arch
-  }.zip`
-}
-
-function getElectronReleaseBaseUrl() {
-  const configuredMirror = process.env.ELECTRON_MIRROR || process.env.npm_config_electron_mirror
-  const baseUrl = configuredMirror || 'https://github.com/electron/electron/releases/download/'
-  return baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`
+      process.env.npm_config_electron_use_remote_checksums
+  )
 }
 
 function logElectronInstallDiagnostics() {

@@ -41,7 +41,7 @@ vi.mock('@/hooks/useVirtualizedScrollAnchor', () => ({
   useVirtualizedScrollAnchor: vi.fn()
 }))
 
-vi.mock('./repo-header-drag', () => ({
+vi.mock('./project-header-drag', () => ({
   useRepoHeaderDrag: () => ({
     state: { draggingRepoId: null, dropIndicatorY: null },
     onHandlePointerDown: vi.fn()

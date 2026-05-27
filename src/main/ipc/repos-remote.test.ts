@@ -8,29 +8,42 @@ import { EventEmitter } from 'events'
 import type * as RepoModule from '../git/repo'
 import { DEFAULT_REPO_BADGE_COLOR } from '../../shared/constants'
 
-const { handleMock, mockStore, mockGitProvider, mockMultiplexer, gitSpawnMock } = vi.hoisted(
-  () => ({
-    handleMock: vi.fn(),
-    mockStore: {
-      getRepos: vi.fn().mockReturnValue([]),
-      addRepo: vi.fn(),
-      removeRepo: vi.fn(),
-      getRepo: vi.fn(),
-      updateRepo: vi.fn(),
-      getSshTarget: vi.fn()
-    },
-    mockGitProvider: {
-      isGitRepo: vi.fn().mockReturnValue(true),
-      isGitRepoAsync: vi.fn().mockResolvedValue({ isRepo: true, rootPath: null }),
-      exec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' })
-    },
-    mockMultiplexer: {
-      request: vi.fn(),
-      notify: vi.fn()
-    },
-    gitSpawnMock: vi.fn()
-  })
-)
+const {
+  handleMock,
+  mockStore,
+  mockGitProvider,
+  mockFilesystemProvider,
+  mockMultiplexer,
+  gitSpawnMock
+} = vi.hoisted(() => ({
+  handleMock: vi.fn(),
+  mockStore: {
+    getRepos: vi.fn().mockReturnValue([]),
+    addRepo: vi.fn(),
+    removeProject: vi.fn(),
+    getRepo: vi.fn(),
+    updateRepo: vi.fn(),
+    getProjectGroups: vi.fn().mockReturnValue([]),
+    createProjectGroup: vi.fn(),
+    updateProjectGroup: vi.fn(),
+    deleteProjectGroup: vi.fn(),
+    moveProjectToGroup: vi.fn(),
+    getSshTarget: vi.fn()
+  },
+  mockGitProvider: {
+    isGitRepo: vi.fn().mockReturnValue(true),
+    isGitRepoAsync: vi.fn().mockResolvedValue({ isRepo: true, rootPath: null }),
+    exec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' })
+  },
+  mockFilesystemProvider: {
+    readDir: vi.fn().mockResolvedValue([])
+  },
+  mockMultiplexer: {
+    request: vi.fn(),
+    notify: vi.fn()
+  },
+  gitSpawnMock: vi.fn()
+}))
 
 vi.mock('electron', () => ({
   dialog: { showOpenDialog: vi.fn() },
@@ -76,6 +89,15 @@ vi.mock('../providers/ssh-git-dispatch', () => ({
   })
 }))
 
+vi.mock('../providers/ssh-filesystem-dispatch', () => ({
+  getSshFilesystemProvider: vi.fn().mockImplementation((id: string) => {
+    if (id === 'conn-1') {
+      return mockFilesystemProvider
+    }
+    return undefined
+  })
+}))
+
 vi.mock('./ssh', () => ({
   getActiveMultiplexer: vi.fn().mockImplementation((id: string) => {
     if (id === 'conn-1') {
@@ -86,6 +108,164 @@ vi.mock('./ssh', () => ({
 }))
 
 import { registerRepoHandlers } from './repos'
+
+describe('projectGroups IPC validation', () => {
+  const handlers = new Map<string, (_event: unknown, args: unknown) => unknown>()
+  const mockWindow = {
+    isDestroyed: () => false,
+    webContents: { send: vi.fn() }
+  }
+
+  beforeEach(() => {
+    handlers.clear()
+    handleMock.mockReset()
+    handleMock.mockImplementation((channel: string, handler: (...a: unknown[]) => unknown) => {
+      handlers.set(channel, handler)
+    })
+    mockWindow.webContents.send.mockReset()
+    mockStore.createProjectGroup.mockReset()
+    mockStore.updateProjectGroup.mockReset()
+    mockStore.deleteProjectGroup.mockReset()
+    mockStore.moveProjectToGroup.mockReset()
+    mockStore.getRepos.mockReset()
+    mockStore.getRepos.mockReturnValue([])
+    mockFilesystemProvider.readDir.mockReset()
+    mockFilesystemProvider.readDir.mockResolvedValue([])
+    mockGitProvider.isGitRepoAsync.mockReset()
+    mockGitProvider.isGitRepoAsync.mockResolvedValue({ isRepo: true, rootPath: null })
+    mockMultiplexer.notify.mockReset()
+    mockMultiplexer.request.mockReset()
+
+    registerRepoHandlers(mockWindow as never, mockStore as never)
+  })
+
+  it('rejects malformed local project group create arguments before persistence', () => {
+    expect(() =>
+      handlers.get('projectGroups:create')!(null, { name: 123, createdFrom: 'unexpected' })
+    ).toThrow('invalid_project_group_create_args')
+
+    expect(mockStore.createProjectGroup).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed local project group update arguments before persistence', () => {
+    expect(() =>
+      handlers.get('projectGroups:update')!(null, {
+        groupId: 'group-1',
+        updates: { isCollapsed: 'yes' }
+      })
+    ).toThrow('invalid_project_group_update_args')
+
+    expect(mockStore.updateProjectGroup).not.toHaveBeenCalled()
+  })
+
+  it('scans nested repositories over a connected SSH filesystem', async () => {
+    mockGitProvider.isGitRepoAsync.mockImplementation(async (path: string) => ({
+      isRepo: path === '/srv/platform/api',
+      rootPath: null
+    }))
+    mockFilesystemProvider.readDir.mockImplementation(async (dirPath: string) =>
+      dirPath === '/srv/platform' ? [{ name: 'api', isDirectory: true, isSymlink: false }] : []
+    )
+
+    const result = await handlers.get('projectGroups:scanNested')!(null, {
+      path: '/srv/platform',
+      connectionId: 'conn-1'
+    })
+
+    expect(result).toMatchObject({
+      selectedPath: '/srv/platform',
+      selectedPathKind: 'non_git_folder',
+      repos: [{ path: '/srv/platform/api', displayName: 'api' }]
+    })
+  })
+
+  it('rejects local nested scans with relative paths', async () => {
+    await expect(
+      handlers.get('projectGroups:scanNested')!(null, {
+        path: 'relative/project'
+      })
+    ).rejects.toThrow('Repo path must be an absolute path')
+  })
+
+  it('imports nested SSH repositories with connection-scoped repo entries', async () => {
+    const group = {
+      id: 'group-1',
+      name: 'Platform',
+      parentPath: '/srv/platform',
+      parentGroupId: null,
+      createdFrom: 'folder-scan',
+      tabOrder: 0,
+      isCollapsed: false,
+      color: null,
+      createdAt: 1,
+      updatedAt: 1
+    }
+    mockStore.createProjectGroup.mockReturnValue(group)
+    mockGitProvider.isGitRepoAsync.mockImplementation(async (path: string) => ({
+      isRepo: path === '/srv/platform/api',
+      rootPath: null
+    }))
+    mockFilesystemProvider.readDir.mockImplementation(async (dirPath: string) =>
+      dirPath === '/srv/platform' ? [{ name: 'api', isDirectory: true, isSymlink: false }] : []
+    )
+
+    const result = await handlers.get('projectGroups:importNested')!(null, {
+      parentPath: '/srv/platform',
+      groupName: 'Platform',
+      projectPaths: ['/srv/platform/api'],
+      connectionId: 'conn-1',
+      mode: 'group'
+    })
+
+    expect(result).toMatchObject({ importedCount: 1, failedCount: 0 })
+    expect(mockStore.addRepo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/srv/platform/api',
+        connectionId: 'conn-1',
+        projectGroupId: group.id
+      })
+    )
+    expect(mockMultiplexer.notify).toHaveBeenCalledWith('session.registerRoot', {
+      rootPath: '/srv/platform/api'
+    })
+  })
+
+  it('sanitizes unexpected nested import errors before returning results', async () => {
+    const group = {
+      id: 'group-1',
+      name: 'Platform',
+      parentPath: '/srv/platform',
+      parentGroupId: null,
+      createdFrom: 'folder-scan',
+      tabOrder: 0,
+      isCollapsed: false,
+      color: null,
+      createdAt: 1,
+      updatedAt: 1
+    }
+    mockStore.createProjectGroup.mockReturnValue(group)
+    mockGitProvider.isGitRepoAsync.mockImplementation(async (path: string) => ({
+      isRepo: path === '/srv/platform/api',
+      rootPath: null
+    }))
+    mockFilesystemProvider.readDir.mockImplementation(async (dirPath: string) =>
+      dirPath === '/srv/platform' ? [{ name: 'api', isDirectory: true, isSymlink: false }] : []
+    )
+    mockStore.addRepo.mockImplementationOnce(() => {
+      throw new Error('secret backend path /srv/platform/api')
+    })
+
+    const result = (await handlers.get('projectGroups:importNested')!(null, {
+      parentPath: '/srv/platform',
+      groupName: 'Platform',
+      projectPaths: ['/srv/platform/api'],
+      connectionId: 'conn-1',
+      mode: 'group'
+    })) as { projects: { error?: string }[] }
+
+    expect(result.projects[0].error).toBe('Repository could not be imported')
+  })
+})
 
 describe('repos:getGitUsername', () => {
   const handlers = new Map<string, (_event: unknown, args: unknown) => unknown>()
@@ -171,6 +351,8 @@ describe('repos:addRemote', () => {
     mockStore.addRepo.mockReset()
     mockStore.getSshTarget.mockReset()
     mockStore.updateRepo.mockReset()
+    mockGitProvider.isGitRepoAsync.mockReset()
+    mockGitProvider.isGitRepoAsync.mockResolvedValue({ isRepo: true, rootPath: null })
     mockMultiplexer.request.mockReset()
     mockMultiplexer.notify.mockReset()
     gitSpawnMock.mockReset()

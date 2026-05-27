@@ -150,7 +150,7 @@ function Settings(): React.JSX.Element {
   const closeSettingsPage = useAppStore((s) => s.closeSettingsPage)
   const repos = useAppStore((s) => s.repos)
   const updateRepo = useAppStore((s) => s.updateRepo)
-  const removeRepo = useAppStore((s) => s.removeRepo)
+  const removeProject = useAppStore((s) => s.removeProject)
   const settingsNavigationTarget = useAppStore((s) => s.settingsNavigationTarget)
   const clearSettingsTarget = useAppStore((s) => s.clearSettingsTarget)
   const settingsSearchInputQuery = useAppStore((s) => s.settingsSearchInputQuery)
@@ -1100,7 +1100,7 @@ function Settings(): React.JSX.Element {
                           hooksInspectionReady={Boolean(repoHooksState)}
                           mayNeedUpdate={repoHooksState?.mayNeedUpdate ?? false}
                           updateRepo={updateRepo}
-                          removeRepo={removeRepo}
+                          removeProject={removeProject}
                         />
                       ) : null}
                     </SettingsSection>
