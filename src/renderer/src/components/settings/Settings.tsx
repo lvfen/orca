@@ -2,7 +2,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { toast } from 'sonner'
 import type { GlobalSettings, OrcaHooks } from '../../../../shared/types'
-import type { SkillDiscoveryTarget } from '../../../../shared/skills'
 import type { SpeechModelState } from '../../../../shared/speech-types'
 import type {
   SourceControlAiSettings,
@@ -17,7 +16,7 @@ import { applyDocumentTheme } from '@/lib/document-theme'
 import { useConfirmationDialog } from '@/components/confirmation-dialog'
 import { SCROLLBACK_PRESETS_MB, getFallbackTerminalFonts } from './SettingsConstants'
 import { DEFAULT_APP_FONT_FAMILY, getDefaultVoiceSettings } from '../../../../shared/constants'
-import { GeneralPane, getDesktopPlatformFromUserAgent } from './GeneralPane'
+import { GeneralPane } from './GeneralPane'
 import { BrowserPane } from './BrowserPane'
 import { AppearancePane } from './AppearancePane'
 import { InputPane } from './InputPane'
@@ -87,60 +86,48 @@ import {
   getRuntimeTargetIdentity
 } from './settings-load-performance'
 import { translate } from '@/i18n/i18n'
-import {
-  getSelectedAgentRuntime,
-  getSkillDiscoveryTargetForRuntime,
-  type LocalAgentRuntime
-} from './CliSkillRuntimeSetup'
 
 const SETTINGS_NAV_GROUPS = [
   {
     id: 'capabilities',
-    get title() {
-      return translate('auto.components.settings.Settings.23c6874fdf', 'AI Capabilities')
-    }
+    titleKey: 'auto.components.settings.Settings.23c6874fdf',
+    titleDefault: 'AI Capabilities'
   },
-  {
-    id: 'setup',
-    get title() {
-      return translate('auto.components.settings.Settings.9abb9be3bc', 'Set Up')
-    }
-  },
+  { id: 'setup', titleKey: 'auto.components.settings.Settings.9abb9be3bc', titleDefault: 'Set Up' },
   {
     id: 'workflows',
-    get title() {
-      return translate('auto.components.settings.Settings.e1578cd4bc', 'Workflows')
-    }
+    titleKey: 'auto.components.settings.Settings.e1578cd4bc',
+    titleDefault: 'Workflows'
   },
   {
     id: 'interface',
-    get title() {
-      return translate('auto.components.settings.Settings.8bd117d669', 'Interface')
-    }
+    titleKey: 'auto.components.settings.Settings.8bd117d669',
+    titleDefault: 'Interface'
   },
   {
     id: 'remote',
-    get title() {
-      return translate('auto.components.settings.Settings.23931df7e8', 'Remote Access')
-    }
+    titleKey: 'auto.components.settings.Settings.23931df7e8',
+    titleDefault: 'Remote Hosts'
+  },
+  {
+    id: 'mobile',
+    titleKey: 'auto.components.settings.Settings.mobile_group',
+    titleDefault: 'Mobile'
   },
   {
     id: 'security',
-    get title() {
-      return translate('auto.components.settings.Settings.084d8fac5b', 'Privacy & Security')
-    }
+    titleKey: 'auto.components.settings.Settings.084d8fac5b',
+    titleDefault: 'Privacy & Security'
   },
   {
     id: 'advanced',
-    get title() {
-      return translate('auto.components.settings.Settings.1c87f8d024', 'Advanced')
-    }
+    titleKey: 'auto.components.settings.Settings.1c87f8d024',
+    titleDefault: 'Advanced'
   },
   {
     id: 'experimental',
-    get title() {
-      return translate('auto.components.settings.Settings.8b017f2506', 'Experimental')
-    }
+    titleKey: 'auto.components.settings.Settings.8b017f2506',
+    titleDefault: 'Experimental'
   }
 ] as const
 
@@ -166,19 +153,6 @@ function getSkillNavInstallStatus(skill: {
     return 'checking'
   }
   return skill.installed ? 'installed' : 'install'
-}
-
-function getSettingsAgentSkillRuntime(args: {
-  settings: GlobalSettings | null
-  isWindows: boolean
-}): LocalAgentRuntime {
-  if (!args.settings) {
-    return {
-      runtime: 'host',
-      label: translate('auto.components.settings.Settings.thisDevice', 'This device')
-    }
-  }
-  return getSelectedAgentRuntime(args.settings, args.isWindows, args.isWindows, false)
 }
 
 function hasReadyVoiceModel(
@@ -276,21 +250,10 @@ function Settings(): React.JSX.Element {
   const isMac = isMacUserAgent()
   const isWebClient = isWebClientLocation()
   const showDesktopOnlySettings = !isWebClient
-  const currentPlatform = getDesktopPlatformFromUserAgent(navigator.userAgent)
-  const agentSkillRuntime = useMemo(
-    () => getSettingsAgentSkillRuntime({ settings, isWindows }),
-    [settings, isWindows]
-  )
-  const agentSkillDiscoveryTarget = useMemo<SkillDiscoveryTarget | undefined>(
-    () => getSkillDiscoveryTargetForRuntime(agentSkillRuntime),
-    [agentSkillRuntime]
-  )
   const orchestrationSkill = useInstalledAgentSkill(ORCHESTRATION_SKILL_NAME, {
-    discoveryTarget: agentSkillDiscoveryTarget,
     sourceKinds: GLOBAL_AGENT_SKILL_SOURCE_KINDS
   })
   const computerUseSkill = useInstalledAgentSkill(COMPUTER_USE_SKILL_NAME, {
-    discoveryTarget: agentSkillDiscoveryTarget,
     enabled: showDesktopOnlySettings,
     sourceKinds: GLOBAL_AGENT_SKILL_SOURCE_KINDS
   })
@@ -968,7 +931,8 @@ function Settings(): React.JSX.Element {
 
   const generalNavSections = visibleNavSections.filter((section) => !section.id.startsWith('repo-'))
   const generalNavGroups: SettingsNavGroup[] = SETTINGS_NAV_GROUPS.map((group) => ({
-    ...group,
+    id: group.id,
+    title: translate(group.titleKey, group.titleDefault),
     sections: generalNavSections.filter((section) => section.group === group.id)
   })).filter((group) => group.sections.length > 0 || group.id === 'setup')
   const repoNavSections = visibleNavSections
@@ -995,8 +959,8 @@ function Settings(): React.JSX.Element {
       className="settings-view-shell flex min-h-0 flex-1 overflow-hidden bg-background"
     >
       <SettingsSidebar
-        activeSectionId={activeSectionId}
         settings={settings}
+        activeSectionId={activeSectionId}
         generalGroups={generalNavGroups}
         repoSections={repoNavSections}
         hasRepos={repos.length > 0}
@@ -1091,15 +1055,7 @@ function Settings(): React.JSX.Element {
                   )}
                   searchEntries={getSectionSearchEntries('orchestration')}
                 >
-                  {isSectionMounted('orchestration') ? (
-                    <OrchestrationPane
-                      currentPlatform={currentPlatform}
-                      settings={settings}
-                      wslSupportedPlatform={wslSupportedPlatform}
-                      wslAvailable={windowsTerminalCapabilities.wslAvailable}
-                      wslCapabilitiesLoading={windowsTerminalCapabilities.isLoading}
-                    />
-                  ) : null}
+                  {isSectionMounted('orchestration') ? <OrchestrationPane /> : null}
                 </SettingsSection>
 
                 {showDesktopOnlySettings ? (
@@ -1116,15 +1072,7 @@ function Settings(): React.JSX.Element {
                       )}
                       searchEntries={getSectionSearchEntries('computer-use')}
                     >
-                      {isSectionMounted('computer-use') ? (
-                        <ComputerUsePane
-                          currentPlatform={currentPlatform}
-                          settings={settings}
-                          wslSupportedPlatform={wslSupportedPlatform}
-                          wslAvailable={windowsTerminalCapabilities.wslAvailable}
-                          wslCapabilitiesLoading={windowsTerminalCapabilities.isLoading}
-                        />
-                      ) : null}
+                      {isSectionMounted('computer-use') ? <ComputerUsePane /> : null}
                     </SettingsSection>
 
                     <SettingsSection
@@ -1453,7 +1401,7 @@ function Settings(): React.JSX.Element {
                         )
                       : translate(
                           'auto.components.settings.Settings.b5ee17826b',
-                          'Switch between local desktop mode and paired remote Orca runtimes.'
+                          'Pair remote Orca runtimes for persistent sessions, richer remote state, and web or mobile handoff.'
                         )
                   }
                   searchEntries={getSectionSearchEntries('servers')}
@@ -1475,7 +1423,7 @@ function Settings(): React.JSX.Element {
                       title={translate('auto.components.settings.Settings.9b02492d1f', 'SSH Hosts')}
                       description={translate(
                         'auto.components.settings.Settings.c2ee313198',
-                        'Remote SSH hosts for files, terminals, and git.'
+                        'Use existing machines over SSH for files, terminals, Git, and workspaces.'
                       )}
                       searchEntries={getSectionSearchEntries('ssh')}
                     >
