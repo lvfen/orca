@@ -95,6 +95,13 @@ export class SshGitProvider implements IGitProvider {
     })) as GitStatusResult
   }
 
+  async getSubmoduleStatus(worktreePath: string, submodulePath: string): Promise<GitStatusResult> {
+    return (await this.mux.request('git.submoduleStatus', {
+      worktreePath,
+      submodulePath
+    })) as GitStatusResult
+  }
+
   async checkIgnoredPaths(worktreePath: string, relativePaths: string[]): Promise<string[]> {
     return (await this.mux.request('git.checkIgnored', {
       worktreePath,

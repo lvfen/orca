@@ -148,6 +148,29 @@ export async function getRuntimeGitStatus(
   )
 }
 
+export async function getRuntimeGitSubmoduleStatus(
+  context: RuntimeGitContext,
+  submodulePath: string
+): Promise<GitStatusResult> {
+  const target = getActiveRuntimeTarget(context.settings)
+  if (target.kind === 'local' || !context.worktreeId) {
+    return window.api.git.submoduleStatus({
+      worktreePath: context.worktreePath,
+      submodulePath,
+      connectionId: context.connectionId
+    })
+  }
+  return callRuntimeRpc<GitStatusResult>(
+    target,
+    'git.submoduleStatus',
+    {
+      worktree: toRuntimeWorktreeSelector(context.worktreeId),
+      submodulePath
+    },
+    { timeoutMs: 15_000 }
+  )
+}
+
 export async function getRuntimeGitIgnoredPaths(
   context: RuntimeGitContext,
   paths: string[]

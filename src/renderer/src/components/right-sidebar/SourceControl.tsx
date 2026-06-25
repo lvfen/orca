@@ -85,6 +85,14 @@ import {
   type SourceControlTreeNode
 } from './source-control-tree'
 import {
+  injectExpandedSubmoduleEntries,
+  injectExpandedSubmoduleRows,
+  isExpandableSubmoduleEntry,
+  type RenderableSourceControlNode,
+  type RenderableSubmoduleListItem,
+  type SubmoduleStatusState
+} from './source-control-submodule-expansion'
+import {
   buildSourceControlDisplaySections,
   getSourceControlSectionViewAction,
   resolveSourceControlGroupOrder,
@@ -159,6 +167,7 @@ import {
   generateRuntimePullRequestFields,
   getRuntimeGitBranchCompare,
   getRuntimeGitHistory,
+  getRuntimeGitSubmoduleStatus,
   stageRuntimeGitPath,
   unstageRuntimeGitPath,
   type RuntimeGitContext,
@@ -484,6 +493,9 @@ const EMPTY_GIT_HISTORY_STATE: GitHistoryPanelState = { status: 'idle' }
 const DEFAULT_COLLAPSED_SECTIONS = ['history'] as const
 const SUBMODULE_WORKTREE_ONLY_LABEL = 'Submodule changes - stage inside submodule'
 const SUBMODULE_WORKTREE_ONLY_STAGE_TOOLTIP = 'Stage these changes inside the submodule'
+const SUBMODULE_LOADING_LABEL = 'Loading submodule changes…'
+const SUBMODULE_EMPTY_LABEL = 'No changes in submodule'
+const SUBMODULE_ERROR_LABEL = 'Failed to load submodule changes'
 
 function createDefaultCollapsedSections(): Set<string> {
   return new Set(DEFAULT_COLLAPSED_SECTIONS)
@@ -948,6 +960,13 @@ function SourceControlInner(): React.JSX.Element {
   const sourceControlViewMode = persistedSourceControlViewMode
   const sourceControlGroupOrder = resolveSourceControlGroupOrder(settings?.sourceControlGroupOrder)
   const [collapsedTreeDirs, setCollapsedTreeDirs] = useState<Set<string>>(new Set())
+  // Why: dirty submodules are shown collapsed by default and only query their
+  // inner status when the user expands them, so the status poll never recurses
+  // into (potentially nested) submodules. Results are cached per submodule path.
+  const [expandedSubmodulePaths, setExpandedSubmodulePaths] = useState<Set<string>>(new Set())
+  const [submoduleStatusByPath, setSubmoduleStatusByPath] = useState<
+    Record<string, SubmoduleStatusState>
+  >({})
   const [baseRefDialogOpen, setBaseRefDialogOpen] = useState(false)
   const [pendingDiscard, setPendingDiscard] = useState<PendingDiscardConfirmation | null>(null)
   // Why: start null rather than 'origin/main' so branch compare doesn't fire
@@ -1620,16 +1639,40 @@ function SourceControlInner(): React.JSX.Element {
   }, [displaySections])
 
   const visibleTreeRowsBySection = useMemo(() => {
-    const rows: Partial<Record<SourceControlDisplaySectionId, GitStatusSourceControlTreeNode[]>> =
-      {}
+    const rows: Partial<Record<SourceControlDisplaySectionId, RenderableSourceControlNode[]>> = {}
     for (const section of displaySections) {
-      rows[section.id] = flattenSourceControlTree(
-        treeRootsBySection[section.id] ?? [],
-        collapsedTreeDirs
+      rows[section.id] = injectExpandedSubmoduleRows(
+        flattenSourceControlTree(treeRootsBySection[section.id] ?? [], collapsedTreeDirs),
+        expandedSubmodulePaths,
+        submoduleStatusByPath,
+        SUBMODULE_LOADING_LABEL,
+        SUBMODULE_EMPTY_LABEL
       )
     }
     return rows
-  }, [collapsedTreeDirs, displaySections, treeRootsBySection])
+  }, [
+    collapsedTreeDirs,
+    displaySections,
+    treeRootsBySection,
+    expandedSubmodulePaths,
+    submoduleStatusByPath
+  ])
+
+  // List view needs the same lazy submodule expansion as the tree view, just
+  // spliced into the flat entry list instead of the tree-row list.
+  const visibleListRowsBySection = useMemo(() => {
+    const rows: Partial<Record<SourceControlDisplaySectionId, RenderableSubmoduleListItem[]>> = {}
+    for (const section of displaySections) {
+      rows[section.id] = injectExpandedSubmoduleEntries(
+        section.items,
+        expandedSubmodulePaths,
+        submoduleStatusByPath,
+        SUBMODULE_LOADING_LABEL,
+        SUBMODULE_EMPTY_LABEL
+      )
+    }
+    return rows
+  }, [displaySections, expandedSubmodulePaths, submoduleStatusByPath])
 
   const branchTreeRoots = useMemo(
     () => compactSourceControlTree(buildSourceControlTree('branch', filteredBranchEntries)),
@@ -1813,6 +1856,8 @@ function SourceControlInner(): React.JSX.Element {
     setFilterExpanded(false)
     setCollapsedSections(createDefaultCollapsedSections())
     setCollapsedTreeDirs(new Set())
+    setExpandedSubmodulePaths(new Set())
+    setSubmoduleStatusByPath({})
     setBaseRefDialogOpen(false)
     setPendingDiscard(null)
     setPendingDiffCommentsClear(null)
@@ -4223,7 +4268,10 @@ function SourceControlInner(): React.JSX.Element {
 
   const bulkUnstagePaths = useMemo(
     () =>
-      selectedEntries.filter((entry) => entry.area === 'staged').map((entry) => entry.entry.path),
+      selectedEntries
+        // Why: submodule-internal rows are read-only from the parent worktree.
+        .filter((entry) => entry.area === 'staged' && !entry.entry.submoduleRoot)
+        .map((entry) => entry.entry.path),
     [selectedEntries]
   )
 
@@ -4720,6 +4768,66 @@ function SourceControlInner(): React.JSX.Element {
       return next
     })
   }, [])
+
+  const fetchSubmoduleStatus = useCallback(
+    async (submodulePath: string): Promise<void> => {
+      if (!worktreePath) {
+        return
+      }
+      // Why: keep any already-loaded children visible during a poll-driven
+      // refetch so expanding then refreshing doesn't flash a loading row.
+      setSubmoduleStatusByPath((prev) =>
+        prev[submodulePath] ? prev : { ...prev, [submodulePath]: { status: 'loading' } }
+      )
+      try {
+        const connectionId = getConnectionId(activeWorktreeId ?? null) ?? undefined
+        const result = await getRuntimeGitSubmoduleStatus(
+          {
+            // Why: route by the repo OWNER host, matching the rest of this panel.
+            settings: activeRepoSettings,
+            worktreeId: activeWorktreeId,
+            worktreePath,
+            connectionId
+          },
+          submodulePath
+        )
+        setSubmoduleStatusByPath((prev) => ({
+          ...prev,
+          [submodulePath]: { status: 'loaded', entries: result.entries }
+        }))
+      } catch (error) {
+        setSubmoduleStatusByPath((prev) => ({
+          ...prev,
+          [submodulePath]: {
+            status: 'error',
+            error: error instanceof Error ? error.message : String(error)
+          }
+        }))
+      }
+    },
+    [activeRepoSettings, activeWorktreeId, worktreePath]
+  )
+
+  const toggleSubmodule = useCallback((submodulePath: string) => {
+    setExpandedSubmodulePaths((prev) => {
+      const next = new Set(prev)
+      if (next.has(submodulePath)) {
+        next.delete(submodulePath)
+      } else {
+        next.add(submodulePath)
+      }
+      return next
+    })
+  }, [])
+
+  // Why: (re)load inner status only for currently-expanded submodules. Re-runs
+  // when the parent status poll refreshes `entries` so expanded children stay
+  // fresh, while collapsed submodules never trigger any extra git work.
+  useEffect(() => {
+    for (const submodulePath of expandedSubmodulePaths) {
+      void fetchSubmoduleStatus(submodulePath)
+    }
+  }, [expandedSubmodulePaths, entries, fetchSubmoduleStatus])
 
   const openCommittedDiff = useCallback(
     (entry: GitBranchChangeEntry, event?: SourceControlRowOpenEvent) => {
@@ -5680,6 +5788,16 @@ function SourceControlInner(): React.JSX.Element {
                     {!isCollapsed &&
                       (sourceControlViewMode === 'tree'
                         ? (visibleTreeRowsBySection[id] ?? []).map((node) => {
+                            if (node.type === 'submodule-placeholder') {
+                              return (
+                                <SubmodulePlaceholderRow
+                                  key={node.key}
+                                  depth={node.depth}
+                                  state={node.state}
+                                  message={node.message}
+                                />
+                              )
+                            }
                             if (node.type === 'directory') {
                               return (
                                 <SourceControlTreeDirectoryRow
@@ -5702,6 +5820,12 @@ function SourceControlInner(): React.JSX.Element {
                                 />
                               )
                             }
+                            const submoduleExpansion = isExpandableSubmoduleEntry(node.entry)
+                              ? {
+                                  isExpanded: expandedSubmodulePaths.has(node.entry.path),
+                                  onToggle: () => toggleSubmodule(node.entry.path)
+                                }
+                              : undefined
                             return (
                               <UncommittedEntryRow
                                 key={node.key}
@@ -5722,11 +5846,29 @@ function SourceControlInner(): React.JSX.Element {
                                 onDiscard={requestDiscardEntry}
                                 commentCount={diffCommentCountByPath.get(node.entry.path) ?? 0}
                                 showPathHint={false}
+                                submoduleExpansion={submoduleExpansion}
                               />
                             )
                           })
-                        : items.map((entry) => {
+                        : (visibleListRowsBySection[id] ?? []).map((row) => {
+                            if (row.type === 'submodule-placeholder') {
+                              return (
+                                <SubmodulePlaceholderRow
+                                  key={row.key}
+                                  depth={row.depth}
+                                  state={row.state}
+                                  message={row.message}
+                                />
+                              )
+                            }
+                            const entry = row.entry
                             const key = `${entry.area}::${entry.path}`
+                            const submoduleExpansion = isExpandableSubmoduleEntry(entry)
+                              ? {
+                                  isExpanded: expandedSubmodulePaths.has(entry.path),
+                                  onToggle: () => toggleSubmodule(entry.path)
+                                }
+                              : undefined
                             return (
                               <UncommittedEntryRow
                                 key={key}
@@ -5734,6 +5876,7 @@ function SourceControlInner(): React.JSX.Element {
                                 entry={entry}
                                 currentWorktreeId={currentWorktreeId}
                                 worktreePath={worktreePath}
+                                depth={entry.submoduleRoot ? 1 : 0}
                                 selected={selectedKeySet.has(key)}
                                 isOpenFile={activeOpenRowKeys.has(key)}
                                 onSelect={handleSelect}
@@ -5745,6 +5888,7 @@ function SourceControlInner(): React.JSX.Element {
                                 onUnstage={handleUnstage}
                                 onDiscard={requestDiscardEntry}
                                 commentCount={diffCommentCountByPath.get(entry.path) ?? 0}
+                                submoduleExpansion={submoduleExpansion}
                               />
                             )
                           }))}
@@ -7653,6 +7797,37 @@ function DiffLineCounts({
   )
 }
 
+function SubmodulePlaceholderRow({
+  depth,
+  state,
+  message
+}: {
+  depth: number
+  state: 'loading' | 'empty' | 'error'
+  message?: string
+}): React.JSX.Element {
+  const fallback =
+    state === 'error'
+      ? SUBMODULE_ERROR_LABEL
+      : state === 'empty'
+        ? SUBMODULE_EMPTY_LABEL
+        : SUBMODULE_LOADING_LABEL
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-1 pr-3 py-1 text-[11px]',
+        state === 'error' ? 'text-destructive' : 'text-muted-foreground'
+      )}
+      style={{
+        paddingLeft: `${depth * SOURCE_CONTROL_TREE_INDENT_PX + SOURCE_CONTROL_TREE_FILE_PADDING_PX}px`
+      }}
+    >
+      {state === 'loading' && <Loader2 className="size-3 shrink-0 animate-spin" />}
+      <span className="min-w-0 truncate">{message ?? fallback}</span>
+    </div>
+  )
+}
+
 const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   entryKey,
   entry,
@@ -7670,7 +7845,8 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   onUnstage,
   onDiscard,
   commentCount,
-  showPathHint = true
+  showPathHint = true,
+  submoduleExpansion
 }: {
   entryKey: string
   entry: GitStatusEntry
@@ -7689,6 +7865,9 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   onDiscard: (entry: GitStatusEntry) => void
   commentCount: number
   showPathHint?: boolean
+  // When set, the row is a dirty submodule: clicking toggles lazy expansion of
+  // its inner changes instead of opening a (uninformative) gitlink diff.
+  submoduleExpansion?: { isExpanded: boolean; onToggle: () => void }
 }): React.JSX.Element {
   const FileIcon = getFileTypeIcon(entry.path)
   const fileName = basename(entry.path)
@@ -7715,6 +7894,7 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   const canDiscard =
     !isUnresolvedConflict &&
     !isResolvedLocally &&
+    !entry.submoduleRoot &&
     (entry.area === 'unstaged' || entry.area === 'untracked')
   const canStage = isStageableStatusEntry(entry)
   const canUnstage = entry.area === 'staged'
@@ -7759,6 +7939,10 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
           e.dataTransfer.effectAllowed = 'copy'
         }}
         onClick={(e) => {
+          if (submoduleExpansion) {
+            submoduleExpansion.onToggle()
+            return
+          }
           if (onSelect) {
             onSelect(e, entryKey, entry)
           } else {
@@ -7766,9 +7950,20 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
           }
         }}
         onDoubleClick={(e) => {
+          if (submoduleExpansion) {
+            return
+          }
           onOpen(entry, toPermanentSourceControlRowOpenEvent(e))
         }}
       >
+        {submoduleExpansion && (
+          <ChevronDown
+            className={cn(
+              'size-3 shrink-0 text-muted-foreground transition-transform',
+              !submoduleExpansion.isExpanded && '-rotate-90'
+            )}
+          />
+        )}
         <FileIcon className="size-3.5 shrink-0" style={{ color: STATUS_COLORS[entry.status] }} />
         <div className="min-w-0 flex-1 text-xs">
           <span className="min-w-0 block truncate">

@@ -2110,6 +2110,11 @@ export type PreloadApi = {
       includeIgnored?: boolean
       bypassEffectiveUpstreamNegativeCache?: boolean
     }) => Promise<GitStatusResult>
+    submoduleStatus: (args: {
+      worktreePath: string
+      submodulePath: string
+      connectionId?: string
+    }) => Promise<GitStatusResult>
     checkIgnored: (args: {
       worktreePath: string
       paths: string[]

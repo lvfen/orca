@@ -36,6 +36,7 @@ import {
 } from '../../shared/text-search'
 import {
   getStatus,
+  getSubmoduleStatus,
   abortMerge,
   abortRebase,
   detectConflictOperation,
@@ -856,6 +857,32 @@ export function registerFilesystemHandlers(
         worktreePath
       )
       return getStatus(worktreePath, { ...options, ...gitOptions })
+    }
+  )
+
+  // Why: the parent status only reports one gitlink row per submodule. When the
+  // user expands a dirty submodule, this fetches the inner per-file changes by
+  // running a plain status inside the submodule's own worktree (read-only).
+  ipcMain.handle(
+    'git:submoduleStatus',
+    async (
+      _event,
+      args: { worktreePath: string; submodulePath: string; connectionId?: string }
+    ): Promise<GitStatusResult> => {
+      if (args.connectionId) {
+        const provider = getSshGitProvider(args.connectionId)
+        if (!provider) {
+          throw new Error(SSH_GIT_PROVIDER_UNAVAILABLE_MESSAGE)
+        }
+        return provider.getSubmoduleStatus(args.worktreePath, args.submodulePath)
+      }
+      const worktreePath = await resolveRegisteredWorktreePath(args.worktreePath, store)
+      const gitOptions = getLocalGitOptionsForRegisteredWorktree(
+        store,
+        args.worktreePath,
+        worktreePath
+      )
+      return getSubmoduleStatus(worktreePath, args.submodulePath, gitOptions)
     }
   )
 

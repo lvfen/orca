@@ -16,6 +16,19 @@ export const GitCheckIgnored = WorktreeSelector.extend({
   paths: z.array(z.string().min(1, 'Missing path')).max(2000)
 })
 
+export const GitSubmoduleStatus = WorktreeSelector.extend({
+  submodulePath: z
+    .unknown()
+    .transform((v) => (typeof v === 'string' ? v : ''))
+    .pipe(
+      z
+        .string()
+        .min(1, 'Missing submodule path')
+        // Why: never let a submodule path be parsed as a git flag (arg injection).
+        .refine((value) => !value.startsWith('-'), 'Submodule path must not start with -')
+    )
+})
+
 export const GitFilePath = WorktreeSelector.extend({
   filePath: z
     .unknown()

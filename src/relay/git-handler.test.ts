@@ -561,6 +561,137 @@ describe('GitHandler', () => {
     })
   })
 
+  describe('submodule', () => {
+    const extraDirs: string[] = []
+
+    afterEach(async () => {
+      await Promise.all(
+        extraDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true }))
+      )
+    })
+
+    // Why: `git submodule add` against a local path is blocked since git 2.38
+    // unless protocol.file.allow=always is set explicitly.
+    function addSubmodule(parent: string, name: string): string {
+      const src = mkdtempSync(path.join(tmpdir(), 'relay-subsrc-'))
+      extraDirs.push(src)
+      gitInit(src)
+      writeFileSync(path.join(src, 'lib.txt'), 'v1\n')
+      gitCommit(src, 'sub initial')
+      execFileSync('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', src, name], {
+        cwd: parent,
+        stdio: 'pipe'
+      })
+      execFileSync('git', ['commit', '-m', 'add submodule'], { cwd: parent, stdio: 'pipe' })
+      return path.join(parent, name)
+    }
+
+    it('returns inner per-file changes via git.submoduleStatus', async () => {
+      gitInit(tmpDir)
+      writeFileSync(path.join(tmpDir, 'root.txt'), 'root')
+      gitCommit(tmpDir, 'initial')
+      const sub = addSubmodule(tmpDir, 'flutter_mine')
+      writeFileSync(path.join(sub, 'lib.txt'), 'v2\n')
+
+      const result = (await dispatcher.callRequest('git.submoduleStatus', {
+        worktreePath: tmpDir,
+        submodulePath: 'flutter_mine'
+      })) as { entries: { path?: unknown; status?: unknown; area?: unknown }[] }
+
+      const inner = result.entries.find((e) => e.path === 'lib.txt')
+      expect(inner).toBeDefined()
+      expect(inner!.status).toBe('modified')
+      expect(inner!.area).toBe('unstaged')
+    })
+
+    it('rejects submoduleStatus paths that escape the worktree', async () => {
+      gitInit(tmpDir)
+      await expect(
+        dispatcher.callRequest('git.submoduleStatus', {
+          worktreePath: tmpDir,
+          submodulePath: '../outside'
+        })
+      ).rejects.toThrow('outside the worktree')
+    })
+
+    it('routes inner submodule files into the submodule worktree diff', async () => {
+      gitInit(tmpDir)
+      writeFileSync(path.join(tmpDir, 'root.txt'), 'root')
+      gitCommit(tmpDir, 'initial')
+      const sub = addSubmodule(tmpDir, 'flutter_mine')
+      writeFileSync(path.join(sub, 'lib.txt'), 'v2\n')
+
+      const result = (await dispatcher.callRequest('git.diff', {
+        worktreePath: tmpDir,
+        filePath: 'flutter_mine/lib.txt',
+        staged: false
+      })) as { kind: string; originalContent: string; modifiedContent: string }
+
+      expect(result.kind).toBe('text')
+      expect(normalizeGitFileText(result.originalContent)).toBe('v1\n')
+      expect(normalizeGitFileText(result.modifiedContent)).toBe('v2\n')
+    })
+
+    it('synthesizes a Subproject commit pointer diff for the gitlink root', async () => {
+      gitInit(tmpDir)
+      writeFileSync(path.join(tmpDir, 'root.txt'), 'root')
+      gitCommit(tmpDir, 'initial')
+      const sub = addSubmodule(tmpDir, 'flutter_mine')
+      const oldOid = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: sub,
+        encoding: 'utf-8'
+      }).trim()
+      writeFileSync(path.join(sub, 'lib.txt'), 'v2\n')
+      execFileSync('git', ['add', 'lib.txt'], { cwd: sub, stdio: 'pipe' })
+      gitCommit(sub, 'sub second')
+      const newOid = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: sub,
+        encoding: 'utf-8'
+      }).trim()
+
+      const result = (await dispatcher.callRequest('git.diff', {
+        worktreePath: tmpDir,
+        filePath: 'flutter_mine',
+        staged: false
+      })) as { kind: string; originalContent: string; modifiedContent: string }
+
+      expect(result.kind).toBe('text')
+      expect(result.originalContent).toBe(`Subproject commit ${oldOid}\n`)
+      expect(result.modifiedContent).toBe(`Subproject commit ${newOid}\n`)
+    })
+
+    // Why: a moved gitlink with a clean submodule worktree has no uncommitted
+    // rows, so status/diff must surface the committed file changes between the
+    // recorded and checked-out commits.
+    it('lists commit-range files and diffs them when the pointer moved', async () => {
+      gitInit(tmpDir)
+      writeFileSync(path.join(tmpDir, 'root.txt'), 'root')
+      gitCommit(tmpDir, 'initial')
+      const sub = addSubmodule(tmpDir, 'flutter_mine')
+      writeFileSync(path.join(sub, 'lib.txt'), 'v2\n')
+      execFileSync('git', ['add', 'lib.txt'], { cwd: sub, stdio: 'pipe' })
+      gitCommit(sub, 'sub second')
+
+      const status = (await dispatcher.callRequest('git.submoduleStatus', {
+        worktreePath: tmpDir,
+        submodulePath: 'flutter_mine'
+      })) as { entries: { path?: unknown; status?: unknown; area?: unknown }[] }
+      const ranged = status.entries.find((e) => e.path === 'lib.txt')
+      expect(ranged).toBeDefined()
+      expect(ranged!.status).toBe('modified')
+      expect(ranged!.area).toBe('unstaged')
+
+      const diff = (await dispatcher.callRequest('git.diff', {
+        worktreePath: tmpDir,
+        filePath: 'flutter_mine/lib.txt',
+        staged: false
+      })) as { kind: string; originalContent: string; modifiedContent: string }
+      expect(diff.kind).toBe('text')
+      expect(normalizeGitFileText(diff.originalContent)).toBe('v1\n')
+      expect(normalizeGitFileText(diff.modifiedContent)).toBe('v2\n')
+    })
+  })
+
   describe('discard', () => {
     it('discards changes to tracked file', async () => {
       gitInit(tmpDir)

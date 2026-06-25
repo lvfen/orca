@@ -18,6 +18,14 @@ import {
   branchDiffEntries,
   validateGitExecArgs
 } from './git-handler-ops'
+import {
+  buildSubmoduleInnerCommitRangeDiff,
+  computeSubmodulePointerDiff,
+  computeSubmoduleRangeEntries,
+  findContainingSubmodule,
+  listSubmodulePaths,
+  resolveSubmoduleCommitRange
+} from './git-handler-submodule-ops'
 import { commitCompare as commitCompareOp, commitDiffEntry } from './git-handler-commit-diff-ops'
 import {
   commitChangesRelay,
@@ -98,6 +106,7 @@ export class GitHandler {
 
   private registerHandlers(): void {
     this.dispatcher.onRequest('git.status', (p) => this.getStatus(p))
+    this.dispatcher.onRequest('git.submoduleStatus', (p) => this.getSubmoduleStatus(p))
     this.dispatcher.onRequest('git.checkIgnored', (p) => this.checkIgnored(p))
     this.dispatcher.onRequest('git.history', (p) => this.history(p))
     this.dispatcher.onRequest('git.commit', (p) => this.commit(p))
@@ -190,6 +199,47 @@ export class GitHandler {
     return getStatusOp(this.git.bind(this), params)
   }
 
+  // Why: the parent status only lists a single gitlink row per submodule. The
+  // renderer fetches inner per-file changes on demand by running a plain status
+  // inside the submodule's own worktree. Reject paths escaping the worktree to
+  // match the diff handler's traversal guard.
+  private async getSubmoduleStatus(params: Record<string, unknown>) {
+    const worktreePath = params.worktreePath as string
+    const submodulePath = params.submodulePath as string
+    const resolved = path.resolve(worktreePath, submodulePath)
+    const rel = path.relative(path.resolve(worktreePath), resolved)
+    if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+      throw new Error(`Submodule path "${submodulePath}" resolves outside the worktree`)
+    }
+    const workingResult = await getStatusOp(this.git.bind(this), {
+      ...params,
+      worktreePath: resolved
+    })
+    // Why: a moved gitlink (clean worktree) has no uncommitted rows; surface the
+    // files changed between the recorded and checked-out commits so the expanded
+    // submodule isn't empty. Mirrors getSubmoduleStatus in the local handler.
+    const { fromOid, toOid } = await resolveSubmoduleCommitRange(
+      this.git.bind(this),
+      worktreePath,
+      submodulePath
+    )
+    if (fromOid && toOid && fromOid !== toOid) {
+      const rangeEntries = await computeSubmoduleRangeEntries(
+        this.git.bind(this),
+        resolved,
+        fromOid,
+        toOid
+      )
+      const rangePaths = new Set(rangeEntries.map((entry) => entry.path))
+      const entries = [
+        ...rangeEntries,
+        ...workingResult.entries.filter((entry) => !rangePaths.has(entry.path))
+      ]
+      return { ...workingResult, entries }
+    }
+    return workingResult
+  }
+
   private async checkIgnored(params: Record<string, unknown>) {
     return checkIgnoredPathsOp(this.git.bind(this), params)
   }
@@ -212,12 +262,58 @@ export class GitHandler {
     if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
       throw new Error(`Path "${filePath}" resolves outside the worktree`)
     }
+    const staged = params.staged as boolean
+    const compareAgainstHead = params.compareAgainstHead as boolean | undefined
+    // Why: gitlink paths can't be read as blobs and submodule working dirs read
+    // as empty, so route the gitlink root → pointer diff and inner files →
+    // recurse into the submodule's own worktree (mirrors the local handler).
+    const submodulePaths = await listSubmodulePaths(this.git.bind(this), worktreePath)
+    if (submodulePaths.length > 0) {
+      const matchedSubmodule = findContainingSubmodule(submodulePaths, filePath)
+      if (matchedSubmodule) {
+        const normalizedFilePath = filePath.replace(/\\/g, '/').replace(/\/+$/, '')
+        if (normalizedFilePath === matchedSubmodule) {
+          return computeSubmodulePointerDiff(
+            this.git.bind(this),
+            worktreePath,
+            matchedSubmodule,
+            staged,
+            compareAgainstHead
+          )
+        }
+        const submoduleWorktreePath = path.join(worktreePath, matchedSubmodule)
+        const innerPath = normalizedFilePath.slice(matchedSubmodule.length + 1)
+        const { fromOid, toOid } = await resolveSubmoduleCommitRange(
+          this.git.bind(this),
+          worktreePath,
+          matchedSubmodule
+        )
+        // Why: a moved gitlink (clean worktree) keeps inner changes in committed
+        // history, so diff the two commits; otherwise read the working-tree blob.
+        if (fromOid && toOid && fromOid !== toOid) {
+          return buildSubmoduleInnerCommitRangeDiff(
+            this.gitBuffer.bind(this),
+            submoduleWorktreePath,
+            innerPath,
+            fromOid,
+            toOid
+          )
+        }
+        return computeDiff(
+          this.gitBuffer.bind(this),
+          submoduleWorktreePath,
+          innerPath,
+          staged,
+          compareAgainstHead
+        )
+      }
+    }
     return computeDiff(
       this.gitBuffer.bind(this),
       worktreePath,
       filePath,
-      params.staged as boolean,
-      params.compareAgainstHead as boolean | undefined
+      staged,
+      compareAgainstHead
     )
   }
 

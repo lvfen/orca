@@ -2538,6 +2538,11 @@ const api = {
       includeIgnored?: boolean
       bypassEffectiveUpstreamNegativeCache?: boolean
     }): Promise<unknown> => ipcRenderer.invoke('git:status', args),
+    submoduleStatus: (args: {
+      worktreePath: string
+      submodulePath: string
+      connectionId?: string
+    }): Promise<unknown> => ipcRenderer.invoke('git:submoduleStatus', args),
     checkIgnored: (args: {
       worktreePath: string
       paths: string[]

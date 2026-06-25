@@ -1393,6 +1393,13 @@ function createGitApi(): NonNullable<Partial<PreloadApi>['git']> {
         includeIgnored
       })
     },
+    submoduleStatus: async ({ worktreePath, submodulePath }) => {
+      const worktree = await resolveRuntimeWorktreeByPath(worktreePath)
+      return callRuntimeResult('git.submoduleStatus', {
+        worktree: toRuntimeWorktreeSelector(worktree.id),
+        submodulePath
+      })
+    },
     checkIgnored: async ({ worktreePath, paths }) => {
       const worktree = await resolveRuntimeWorktreeByPath(worktreePath)
       return callRuntimeResult('git.checkIgnored', {
