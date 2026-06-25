@@ -70,6 +70,36 @@ export const getGitPaneSearchEntries = createLocalizedCatalog(() => [
       ...translateSearchKeyword('auto.components.settings.git.search.gitChanges', 'git changes')
     ]
   },
+  {
+    title: translate(
+      'auto.components.settings.git.search.compareAgainstUpstreamTitle',
+      'Compare Against Current Branch'
+    ),
+    description: translate(
+      'auto.components.settings.git.search.compareAgainstUpstreamDescription',
+      "Default the Source Control compare base to the current branch's upstream so it prioritizes local changes, instead of the repository default branch. Only affects the compare view, not the Pull Request or rebase target."
+    ),
+    keywords: [
+      ...translateSearchKeyword('auto.components.settings.git.search.compareBase', 'compare base'),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.currentBranch',
+        'current branch'
+      ),
+      ...translateSearchKeyword('auto.components.settings.git.search.upstream', 'upstream'),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.localChanges',
+        'local changes'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.originMaster',
+        'origin/master'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.committedChanges',
+        'committed changes'
+      )
+    ]
+  },
   ...getAutoRenameBranchSearchEntries(),
   {
     title: translate('auto.components.settings.git.search.bc7d9f69ce', 'Orca Attribution'),

@@ -5103,7 +5103,9 @@
           "sourceControlGroupOrderDescription": "ソース管理で「変更」「ステージ済みの変更」「未追跡ファイル」のどれを先に表示するかを選択します。",
           "changesFirst": "変更を先頭",
           "stagedFirst": "ステージ済みを先頭",
-          "untrackedFirst": "未追跡を先頭"
+          "untrackedFirst": "未追跡を先頭",
+          "compareAgainstUpstreamTitle": "現在のブランチと比較",
+          "compareAgainstUpstreamDescription": "ソース管理の比較基準を既定で現在のブランチの上流に設定し、リポジトリの既定ブランチではなくローカルの変更を優先表示します。比較ビューのみに影響し、Pull Request やリベース先には影響しません。"
         },
         "HiddenExperimentalGroup": {
           "d0f914a528": "プレースホルダーの切り替え",
@@ -7216,7 +7218,15 @@
             "stagedFirst": "ステージ済みを先頭",
             "untrackedFirst": "未追跡を先頭",
             "sourceControl": "ソース管理",
-            "gitChanges": "git の変更"
+            "gitChanges": "git の変更",
+            "compareAgainstUpstreamTitle": "現在のブランチと比較",
+            "compareAgainstUpstreamDescription": "ソース管理の比較基準を既定で現在のブランチの上流に設定し、リポジトリの既定ブランチではなくローカルの変更を優先表示します。比較ビューのみに影響し、Pull Request やリベース先には影響しません。",
+            "compareBase": "比較基準",
+            "currentBranch": "現在のブランチ",
+            "upstream": "上流",
+            "localChanges": "ローカルの変更",
+            "originMaster": "origin/master",
+            "committedChanges": "コミット済みの変更"
           }
         },
         "input": {

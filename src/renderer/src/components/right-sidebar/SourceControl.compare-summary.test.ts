@@ -5,6 +5,7 @@ import {
   CompareSummaryToolbarButton,
   refreshSourceControlAfterRemoteAction,
   resolveSourceControlBaseRef,
+  resolveSourceControlCompareBaseRef,
   resolveSourceControlPickerBaseRef,
   shouldRefreshBranchCompareForStatusHead,
   shouldShowCompareSummary
@@ -206,6 +207,72 @@ describe('SourceControl compare summary', () => {
         defaultBaseRef: 'origin/main'
       })
     ).toBe('origin/main')
+  })
+
+  it('keeps the compare base equal to the merge target when the setting is off', () => {
+    expect(
+      resolveSourceControlCompareBaseRef({
+        enabled: false,
+        worktreeBaseRef: null,
+        repoBaseRef: null,
+        upstreamName: 'origin/feature',
+        fallbackBaseRef: 'origin/master'
+      })
+    ).toBe('origin/master')
+
+    expect(
+      resolveSourceControlCompareBaseRef({
+        enabled: false,
+        upstreamName: 'origin/feature',
+        fallbackBaseRef: null
+      })
+    ).toBeNull()
+  })
+
+  it('prefers a pinned base over the upstream when the setting is on', () => {
+    expect(
+      resolveSourceControlCompareBaseRef({
+        enabled: true,
+        worktreeBaseRef: 'refs/remotes/origin/release',
+        repoBaseRef: 'origin/main',
+        upstreamName: 'origin/feature',
+        fallbackBaseRef: 'origin/master'
+      })
+    ).toBe('refs/remotes/origin/release')
+
+    expect(
+      resolveSourceControlCompareBaseRef({
+        enabled: true,
+        worktreeBaseRef: null,
+        repoBaseRef: ' origin/main ',
+        upstreamName: 'origin/feature',
+        fallbackBaseRef: 'origin/master'
+      })
+    ).toBe('origin/main')
+  })
+
+  it('uses the current branch upstream when on and no base is pinned', () => {
+    expect(
+      resolveSourceControlCompareBaseRef({
+        enabled: true,
+        worktreeBaseRef: null,
+        repoBaseRef: null,
+        upstreamName: 'origin/feature',
+        fallbackBaseRef: 'origin/master'
+      })
+    ).toBe('origin/feature')
+  })
+
+  it('returns null (working-tree only) when on and the branch has no upstream', () => {
+    expect(
+      resolveSourceControlCompareBaseRef({
+        enabled: true,
+        worktreeBaseRef: null,
+        repoBaseRef: null,
+        upstreamName: null,
+        fallbackBaseRef: 'origin/master'
+      })
+    ).toBeNull()
   })
 
   it('wires toolbar actions without rendering the dead view-mode toggle', () => {

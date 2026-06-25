@@ -5081,7 +5081,9 @@
           "sourceControlGroupOrderDescription": "Elige si Cambios, Cambios preparados o Archivos sin seguimiento aparecen primero en Control de código fuente.",
           "changesFirst": "Cambios primero",
           "stagedFirst": "Cambios preparados primero",
-          "untrackedFirst": "Archivos sin seguimiento primero"
+          "untrackedFirst": "Archivos sin seguimiento primero",
+          "compareAgainstUpstreamTitle": "Comparar con la rama actual",
+          "compareAgainstUpstreamDescription": "Establece la base de comparación de Control de código fuente en el upstream de la rama actual para priorizar los cambios locales, en lugar de la rama predeterminada del repositorio. Solo afecta a la vista de comparación, no al objetivo de Pull Request o rebase."
         },
         "HiddenExperimentalGroup": {
           "d0f914a528": "Alternar marcador de posición",
@@ -7194,7 +7196,15 @@
             "stagedFirst": "cambios preparados primero",
             "untrackedFirst": "sin seguimiento primero",
             "sourceControl": "control de código fuente",
-            "gitChanges": "cambios de git"
+            "gitChanges": "cambios de git",
+            "compareAgainstUpstreamTitle": "Comparar con la rama actual",
+            "compareAgainstUpstreamDescription": "Establece la base de comparación de Control de código fuente en el upstream de la rama actual para priorizar los cambios locales, en lugar de la rama predeterminada del repositorio. Solo afecta a la vista de comparación, no al objetivo de Pull Request o rebase.",
+            "compareBase": "base de comparación",
+            "currentBranch": "rama actual",
+            "upstream": "upstream",
+            "localChanges": "cambios locales",
+            "originMaster": "origin/master",
+            "committedChanges": "cambios confirmados"
           }
         },
         "input": {

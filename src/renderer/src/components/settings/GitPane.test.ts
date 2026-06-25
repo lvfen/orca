@@ -163,4 +163,59 @@ describe('GitPane', () => {
     expect(matchesSettingsSearch('staged', getGitPaneSearchEntries())).toBe(true)
     expect(matchesSettingsSearch('group order', getGitPaneSearchEntries())).toBe(true)
   })
+
+  it('renders the compare-against-current-branch setting in Git settings', () => {
+    const markup = renderGitPane('compare base')
+
+    expect(markup).toContain(
+      translate(
+        'auto.components.settings.GitPane.compareAgainstUpstreamTitle',
+        'Compare Against Current Branch'
+      )
+    )
+  })
+
+  it('includes compare-against-current-branch search metadata', () => {
+    expect(matchesSettingsSearch('compare base', getGitPaneSearchEntries())).toBe(true)
+    expect(matchesSettingsSearch('upstream', getGitPaneSearchEntries())).toBe(true)
+  })
+
+  it('reflects the compare-against-current-branch setting state in the toggle', () => {
+    useAppStore.setState({ settingsSearchQuery: 'compare base' })
+    const off = renderToStaticMarkup(
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(GitPane, {
+          settings: {
+            ...getDefaultSettings(os.homedir()),
+            sourceControlCompareAgainstUpstream: false
+          },
+          updateSettings: () => {},
+          writeSourceControlAiSettings: async () => {},
+          displayedGitUsername: 'brennan',
+          settingsSearchQuery: 'compare base'
+        })
+      )
+    )
+    const on = renderToStaticMarkup(
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(GitPane, {
+          settings: {
+            ...getDefaultSettings(os.homedir()),
+            sourceControlCompareAgainstUpstream: true
+          },
+          updateSettings: () => {},
+          writeSourceControlAiSettings: async () => {},
+          displayedGitUsername: 'brennan',
+          settingsSearchQuery: 'compare base'
+        })
+      )
+    )
+
+    expect(off).toContain('aria-checked="false"')
+    expect(on).toContain('aria-checked="true"')
+  })
 })

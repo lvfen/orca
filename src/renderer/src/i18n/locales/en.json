@@ -5118,7 +5118,9 @@
           "sourceControlGroupOrderDescription": "Choose whether Changes, Staged Changes, or Untracked Files appear first in Source Control.",
           "changesFirst": "Changes first",
           "stagedFirst": "Staged first",
-          "untrackedFirst": "Untracked first"
+          "untrackedFirst": "Untracked first",
+          "compareAgainstUpstreamTitle": "Compare Against Current Branch",
+          "compareAgainstUpstreamDescription": "Default the Source Control compare base to the current branch's upstream so it prioritizes local changes, instead of the repository default branch. Only affects the compare view, not the Pull Request or rebase target."
         },
         "HiddenExperimentalGroup": {
           "d0f914a528": "Placeholder toggle",
@@ -7231,7 +7233,15 @@
             "stagedFirst": "staged first",
             "untrackedFirst": "untracked first",
             "sourceControl": "source control",
-            "gitChanges": "git changes"
+            "gitChanges": "git changes",
+            "compareAgainstUpstreamTitle": "Compare Against Current Branch",
+            "compareAgainstUpstreamDescription": "Default the Source Control compare base to the current branch's upstream so it prioritizes local changes, instead of the repository default branch. Only affects the compare view, not the Pull Request or rebase target.",
+            "compareBase": "compare base",
+            "currentBranch": "current branch",
+            "upstream": "upstream",
+            "localChanges": "local changes",
+            "originMaster": "origin/master",
+            "committedChanges": "committed changes"
           }
         },
         "input": {

@@ -350,6 +350,30 @@ export function resolveSourceControlBaseRef(input: {
   return worktreeBaseRef || input.repoBaseRef?.trim() || input.defaultBaseRef?.trim() || null
 }
 
+// Why: the compare/diff view's base is conceptually distinct from the PR/rebase
+// merge target (effectiveBaseRef). When the setting is on, default the compare
+// base to the current branch's upstream so the panel surfaces local changes
+// instead of the full delta vs the repo default branch. `null` means "no
+// committed-changes comparison" (only the working tree), used when a branch
+// has no upstream. When the setting is off, fall back to effectiveBaseRef so
+// behavior is unchanged.
+export function resolveSourceControlCompareBaseRef(input: {
+  enabled: boolean
+  worktreeBaseRef?: string | null
+  repoBaseRef?: string | null
+  upstreamName?: string | null
+  fallbackBaseRef?: string | null
+}): string | null {
+  if (!input.enabled) {
+    return input.fallbackBaseRef?.trim() || null
+  }
+  const pinned = input.worktreeBaseRef?.trim() || input.repoBaseRef?.trim()
+  if (pinned) {
+    return pinned
+  }
+  return input.upstreamName?.trim() || null
+}
+
 export function resolveSourceControlPickerBaseRef(input: {
   pinnedBaseRef?: string | null
   effectiveBaseRef?: string | null
@@ -810,6 +834,7 @@ function SourceControlInner(): React.JSX.Element {
   const updateWorktreeGitIdentity = useAppStore((s) => s.updateWorktreeGitIdentity)
   const beginGitBranchCompareRequest = useAppStore((s) => s.beginGitBranchCompareRequest)
   const setGitBranchCompareResult = useAppStore((s) => s.setGitBranchCompareResult)
+  const clearGitBranchCompare = useAppStore((s) => s.clearGitBranchCompare)
   const fetchUpstreamStatus = useAppStore((s) => s.fetchUpstreamStatus)
   const ensureHostedReviewPushTarget = useAppStore((s) => s.ensureHostedReviewPushTarget)
   const setUpstreamStatus = useAppStore((s) => s.setUpstreamStatus)
@@ -1376,6 +1401,15 @@ function SourceControlInner(): React.JSX.Element {
     reviewBaseRefName: hostedReview?.baseRefName,
     repoBaseRef: normalizedRepoBaseRef,
     defaultBaseRef
+  })
+  // Why: the compare/diff view uses this base; the PR/rebase merge target keeps
+  // using effectiveBaseRef. When the setting is off, this equals effectiveBaseRef.
+  const compareBaseRef = resolveSourceControlCompareBaseRef({
+    enabled: settings?.sourceControlCompareAgainstUpstream ?? false,
+    worktreeBaseRef: normalizedWorktreeBaseRef,
+    repoBaseRef: normalizedRepoBaseRef,
+    upstreamName: remoteStatus?.upstreamName ?? null,
+    fallbackBaseRef: effectiveBaseRef
   })
   const pickerBaseRef = resolveSourceControlPickerBaseRef({
     pinnedBaseRef,
@@ -1971,11 +2005,11 @@ function SourceControlInner(): React.JSX.Element {
         // compound flows (runCompoundCommitAction) need handleCommit to
         // resolve immediately so the push step starts without delay. Errors
         // here are best-effort — the polling tick will retry.
-        if (!options?.target && effectiveBaseRef) {
+        if (!options?.target && compareBaseRef) {
           beginGitBranchCompareRequest(
             target.worktreeId,
-            `${target.worktreeId}:${effectiveBaseRef}:${Date.now()}:post-commit`,
-            effectiveBaseRef
+            `${target.worktreeId}:${compareBaseRef}:${Date.now()}:post-commit`,
+            compareBaseRef
           )
         }
         if (!options?.target) {
@@ -2000,7 +2034,7 @@ function SourceControlInner(): React.JSX.Element {
       activeWorktreeId,
       beginGitBranchCompareRequest,
       commitMessage,
-      effectiveBaseRef,
+      compareBaseRef,
       grouped.staged.length,
       refreshActiveGitStatusAfterMutation,
       updateCommitDrafts,
@@ -4495,11 +4529,11 @@ function SourceControlInner(): React.JSX.Element {
   const branchCompareStatusHeadRef = useRef<BranchCompareStatusHeadSnapshot | null>(null)
 
   const runBranchCompare = useCallback(async () => {
-    if (!activeWorktreeId || !worktreePath || !effectiveBaseRef || isFolder) {
+    if (!activeWorktreeId || !worktreePath || !compareBaseRef || isFolder) {
       return
     }
 
-    const requestKey = `${activeWorktreeId}:${effectiveBaseRef}:${Date.now()}`
+    const requestKey = `${activeWorktreeId}:${compareBaseRef}:${Date.now()}`
     const existingSummary =
       useAppStore.getState().gitBranchCompareSummaryByWorktree[activeWorktreeId]
 
@@ -4510,12 +4544,12 @@ function SourceControlInner(): React.JSX.Element {
     // current UI visible until the new IPC result arrives.  Resetting to
     // 'loading' on every poll when the compare is in an error state caused a
     // visible loading→error→loading→error flicker.
-    const baseRefChanged = existingSummary && existingSummary.baseRef !== effectiveBaseRef
+    const baseRefChanged = existingSummary && existingSummary.baseRef !== compareBaseRef
     const shouldResetToLoading = !existingSummary || baseRefChanged
     if (shouldResetToLoading) {
-      beginGitBranchCompareRequest(activeWorktreeId, requestKey, effectiveBaseRef)
+      beginGitBranchCompareRequest(activeWorktreeId, requestKey, compareBaseRef)
     } else {
-      beginGitBranchCompareRequest(activeWorktreeId, requestKey, effectiveBaseRef, {
+      beginGitBranchCompareRequest(activeWorktreeId, requestKey, compareBaseRef, {
         preserveExistingSummary: true
       })
     }
@@ -4530,13 +4564,13 @@ function SourceControlInner(): React.JSX.Element {
           worktreePath,
           connectionId
         },
-        effectiveBaseRef
+        compareBaseRef
       )
       setGitBranchCompareResult(activeWorktreeId, requestKey, result)
     } catch (error) {
       setGitBranchCompareResult(activeWorktreeId, requestKey, {
         summary: {
-          baseRef: effectiveBaseRef,
+          baseRef: compareBaseRef,
           baseOid: null,
           compareRef: branchName,
           headOid: null,
@@ -4553,7 +4587,7 @@ function SourceControlInner(): React.JSX.Element {
     activeWorktreeId,
     beginGitBranchCompareRequest,
     branchName,
-    effectiveBaseRef,
+    compareBaseRef,
     isFolder,
     setGitBranchCompareResult,
     worktreePath
@@ -4629,7 +4663,7 @@ function SourceControlInner(): React.JSX.Element {
           worktreePath,
           connectionId
         },
-        { limit: 50, baseRef: effectiveBaseRef }
+        { limit: 50, baseRef: compareBaseRef }
       )
       if (gitHistoryRequestByWorktreeRef.current[worktreeId] !== requestId) {
         return
@@ -4653,7 +4687,7 @@ function SourceControlInner(): React.JSX.Element {
   }, [
     activeRepoSettings,
     activeWorktreeId,
-    effectiveBaseRef,
+    compareBaseRef,
     isBranchVisible,
     isFolder,
     isGitHistoryExpanded,
@@ -4665,13 +4699,13 @@ function SourceControlInner(): React.JSX.Element {
   refreshGitHistoryRef.current = refreshGitHistory
 
   useEffect(() => {
-    if (!activeWorktreeId || !worktreePath || !isBranchVisible || !effectiveBaseRef || isFolder) {
+    if (!activeWorktreeId || !worktreePath || !isBranchVisible || !compareBaseRef || isFolder) {
       branchCompareStatusHeadRef.current = null
       return
     }
 
     const current = {
-      baseRef: effectiveBaseRef,
+      baseRef: compareBaseRef,
       statusHead: activeGitStatusHead,
       worktreeId: activeWorktreeId
     }
@@ -4683,14 +4717,14 @@ function SourceControlInner(): React.JSX.Element {
   }, [
     activeGitStatusHead,
     activeWorktreeId,
-    effectiveBaseRef,
+    compareBaseRef,
     isBranchVisible,
     isFolder,
     worktreePath
   ])
 
   useEffect(() => {
-    if (!activeWorktreeId || !worktreePath || !isBranchVisible || !effectiveBaseRef || isFolder) {
+    if (!activeWorktreeId || !worktreePath || !isBranchVisible || !compareBaseRef || isFolder) {
       return
     }
 
@@ -4700,7 +4734,18 @@ function SourceControlInner(): React.JSX.Element {
       run: () => void refreshBranchCompareRef.current(),
       intervalMs: BRANCH_REFRESH_INTERVAL_MS
     })
-  }, [activeWorktreeId, effectiveBaseRef, isBranchVisible, isFolder, worktreePath])
+  }, [activeWorktreeId, compareBaseRef, isBranchVisible, isFolder, worktreePath])
+
+  useEffect(() => {
+    // Why: when there is no compare base (prefer-upstream setting on, branch has
+    // no upstream), runBranchCompare bails out; drop any stale summary so the
+    // committed-changes section and "vs" row disappear and only the working tree
+    // shows.
+    if (!activeWorktreeId || isFolder || compareBaseRef) {
+      return
+    }
+    clearGitBranchCompare(activeWorktreeId)
+  }, [activeWorktreeId, clearGitBranchCompare, compareBaseRef, isFolder])
 
   useEffect(() => {
     // Why: history shells out to git. Defer the first load until the user
@@ -5302,7 +5347,7 @@ function SourceControlInner(): React.JSX.Element {
           diffCommentCount={diffCommentCount}
           onExpandNotes={() => setDiffCommentsExpanded(true)}
           branchSummary={branchSummary}
-          compareBaseRef={effectiveBaseRef}
+          compareBaseRef={compareBaseRef}
           upstreamStatus={remoteStatus}
         />
 
