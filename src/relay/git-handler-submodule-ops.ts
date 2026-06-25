@@ -14,6 +14,40 @@ import { parseNumstat } from '../shared/git-uncommitted-line-stats'
 import { readBlobAtOid, type GitBufferExec, type GitExec } from './git-handler-ops'
 
 /**
+ * Short TTL for the configured-submodule-paths cache, matching the local
+ * handler (src/main/git/status.ts) so a burst of diff clicks on a worktree
+ * doesn't re-read `.gitmodules` over the (possibly high-latency) SSH link.
+ */
+export const SUBMODULE_PATHS_CACHE_TTL_MS = 5_000
+type SubmodulePathsCacheEntry = { paths: string[]; expiresAt: number }
+export type SubmodulePathsCache = Map<string, SubmodulePathsCacheEntry>
+
+export function createSubmodulePathsCache(): SubmodulePathsCache {
+  return new Map()
+}
+
+/**
+ * Cached variant of {@link listSubmodulePaths}. The cache is passed in (held by
+ * the GitHandler instance) so it is naturally bound to the connection lifecycle
+ * and never leaks across relay instances or tests. An empty result is cached
+ * too, so a submodule-free repo doesn't re-read `.gitmodules` on every diff.
+ */
+export async function listSubmodulePathsCached(
+  git: GitExec,
+  worktreePath: string,
+  cache: SubmodulePathsCache,
+  now: number = Date.now()
+): Promise<string[]> {
+  const cached = cache.get(worktreePath)
+  if (cached && cached.expiresAt > now) {
+    return cached.paths
+  }
+  const paths = await listSubmodulePaths(git, worktreePath)
+  cache.set(worktreePath, { paths, expiresAt: now + SUBMODULE_PATHS_CACHE_TTL_MS })
+  return paths
+}
+
+/**
  * Configured submodule paths (relative, forward-slash) read from `.gitmodules`.
  * Used to route gitlink/inner diffs without an index-wide `ls-files` scan.
  */

@@ -22,9 +22,11 @@ import {
   buildSubmoduleInnerCommitRangeDiff,
   computeSubmodulePointerDiff,
   computeSubmoduleRangeEntries,
+  createSubmodulePathsCache,
   findContainingSubmodule,
-  listSubmodulePaths,
-  resolveSubmoduleCommitRange
+  listSubmodulePathsCached,
+  resolveSubmoduleCommitRange,
+  type SubmodulePathsCache
 } from './git-handler-submodule-ops'
 import { commitCompare as commitCompareOp, commitDiffEntry } from './git-handler-commit-diff-ops'
 import {
@@ -96,6 +98,11 @@ function execFileWithStdin(
 
 export class GitHandler {
   private dispatcher: RelayDispatcher
+
+  // Why: configured submodule paths change rarely; an instance-level TTL cache
+  // avoids re-reading `.gitmodules` on every diff click over SSH, and being
+  // per-instance it stays bound to the connection lifecycle (no cross-test leak).
+  private submodulePathsCache: SubmodulePathsCache = createSubmodulePathsCache()
 
   // Why: RelayContext is accepted for protocol back-compat (see
   // docs/relay-fs-allowlist-removal.md) but no longer consulted on git ops.
@@ -267,7 +274,11 @@ export class GitHandler {
     // Why: gitlink paths can't be read as blobs and submodule working dirs read
     // as empty, so route the gitlink root → pointer diff and inner files →
     // recurse into the submodule's own worktree (mirrors the local handler).
-    const submodulePaths = await listSubmodulePaths(this.git.bind(this), worktreePath)
+    const submodulePaths = await listSubmodulePathsCached(
+      this.git.bind(this),
+      worktreePath,
+      this.submodulePathsCache
+    )
     if (submodulePaths.length > 0) {
       const matchedSubmodule = findContainingSubmodule(submodulePaths, filePath)
       if (matchedSubmodule) {

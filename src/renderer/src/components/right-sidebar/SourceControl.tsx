@@ -73,6 +73,11 @@ import {
   runDiscardAllForArea,
   type DiscardAllArea
 } from './discard-all-sequence'
+import {
+  canDiscardStatusEntry,
+  canStageStatusEntry,
+  canUnstageStatusEntry
+} from './source-control-entry-actions'
 import { getFileTypeIcon } from '@/lib/file-type-icons'
 import {
   buildGitStatusSourceControlTree,
@@ -89,9 +94,9 @@ import {
   injectExpandedSubmoduleRows,
   isExpandableSubmoduleEntry,
   type RenderableSourceControlNode,
-  type RenderableSubmoduleListItem,
-  type SubmoduleStatusState
+  type RenderableSubmoduleListItem
 } from './source-control-submodule-expansion'
+import { useSourceControlSubmoduleStatus } from './useSourceControlSubmoduleStatus'
 import {
   buildSourceControlDisplaySections,
   getSourceControlSectionViewAction,
@@ -167,7 +172,6 @@ import {
   generateRuntimePullRequestFields,
   getRuntimeGitBranchCompare,
   getRuntimeGitHistory,
-  getRuntimeGitSubmoduleStatus,
   stageRuntimeGitPath,
   unstageRuntimeGitPath,
   type RuntimeGitContext,
@@ -985,13 +989,6 @@ function SourceControlInner(): React.JSX.Element {
   const sourceControlViewMode = persistedSourceControlViewMode
   const sourceControlGroupOrder = resolveSourceControlGroupOrder(settings?.sourceControlGroupOrder)
   const [collapsedTreeDirs, setCollapsedTreeDirs] = useState<Set<string>>(new Set())
-  // Why: dirty submodules are shown collapsed by default and only query their
-  // inner status when the user expands them, so the status poll never recurses
-  // into (potentially nested) submodules. Results are cached per submodule path.
-  const [expandedSubmodulePaths, setExpandedSubmodulePaths] = useState<Set<string>>(new Set())
-  const [submoduleStatusByPath, setSubmoduleStatusByPath] = useState<
-    Record<string, SubmoduleStatusState>
-  >({})
   const [baseRefDialogOpen, setBaseRefDialogOpen] = useState(false)
   const [pendingDiscard, setPendingDiscard] = useState<PendingDiscardConfirmation | null>(null)
   // Why: start null rather than 'origin/main' so branch compare doesn't fire
@@ -1130,6 +1127,13 @@ function SourceControlInner(): React.JSX.Element {
 
   const isFolder = activeRepo ? isFolderRepo(activeRepo) : false
   const worktreePath = activeWorktree?.path ?? null
+  const { expandedSubmodulePaths, submoduleStatusByPath, toggleSubmodule } =
+    useSourceControlSubmoduleStatus({
+      activeWorktreeId,
+      worktreePath,
+      activeRepoSettings,
+      entries
+    })
   const activeCommitMessageGenerationKey = getCommitMessageGenerationRecordKey(
     activeWorktreeId,
     worktreePath
@@ -1890,8 +1894,6 @@ function SourceControlInner(): React.JSX.Element {
     setFilterExpanded(false)
     setCollapsedSections(createDefaultCollapsedSections())
     setCollapsedTreeDirs(new Set())
-    setExpandedSubmodulePaths(new Set())
-    setSubmoduleStatusByPath({})
     setBaseRefDialogOpen(false)
     setPendingDiscard(null)
     setPendingDiffCommentsClear(null)
@@ -4813,66 +4815,6 @@ function SourceControlInner(): React.JSX.Element {
       return next
     })
   }, [])
-
-  const fetchSubmoduleStatus = useCallback(
-    async (submodulePath: string): Promise<void> => {
-      if (!worktreePath) {
-        return
-      }
-      // Why: keep any already-loaded children visible during a poll-driven
-      // refetch so expanding then refreshing doesn't flash a loading row.
-      setSubmoduleStatusByPath((prev) =>
-        prev[submodulePath] ? prev : { ...prev, [submodulePath]: { status: 'loading' } }
-      )
-      try {
-        const connectionId = getConnectionId(activeWorktreeId ?? null) ?? undefined
-        const result = await getRuntimeGitSubmoduleStatus(
-          {
-            // Why: route by the repo OWNER host, matching the rest of this panel.
-            settings: activeRepoSettings,
-            worktreeId: activeWorktreeId,
-            worktreePath,
-            connectionId
-          },
-          submodulePath
-        )
-        setSubmoduleStatusByPath((prev) => ({
-          ...prev,
-          [submodulePath]: { status: 'loaded', entries: result.entries }
-        }))
-      } catch (error) {
-        setSubmoduleStatusByPath((prev) => ({
-          ...prev,
-          [submodulePath]: {
-            status: 'error',
-            error: error instanceof Error ? error.message : String(error)
-          }
-        }))
-      }
-    },
-    [activeRepoSettings, activeWorktreeId, worktreePath]
-  )
-
-  const toggleSubmodule = useCallback((submodulePath: string) => {
-    setExpandedSubmodulePaths((prev) => {
-      const next = new Set(prev)
-      if (next.has(submodulePath)) {
-        next.delete(submodulePath)
-      } else {
-        next.add(submodulePath)
-      }
-      return next
-    })
-  }, [])
-
-  // Why: (re)load inner status only for currently-expanded submodules. Re-runs
-  // when the parent status poll refreshes `entries` so expanded children stay
-  // fresh, while collapsed submodules never trigger any extra git work.
-  useEffect(() => {
-    for (const submodulePath of expandedSubmodulePaths) {
-      void fetchSubmoduleStatus(submodulePath)
-    }
-  }, [expandedSubmodulePaths, entries, fetchSubmoduleStatus])
 
   const openCommittedDiff = useCallback(
     (entry: GitBranchChangeEntry, event?: SourceControlRowOpenEvent) => {
@@ -7919,7 +7861,6 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   const parentDir = dirname(entry.path)
   const dirPath = parentDir === '.' ? '' : parentDir
   const isUnresolvedConflict = entry.conflictStatus === 'unresolved'
-  const isResolvedLocally = entry.conflictStatus === 'resolved_locally'
   const isSubmoduleWorktreeOnly = isSubmoduleWorktreeOnlyChange(entry)
   const conflictLabel = entry.conflictKind
     ? getLocalizedConflictKindLabel(entry.conflictKind)
@@ -7936,13 +7877,11 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   // For unresolved: discarding is too easy to misfire on a high-risk file.
   // For resolved_locally: discarding can silently re-create the conflict or
   // lose the resolution, and v1 does not have UX to explain this clearly.
-  const canDiscard =
-    !isUnresolvedConflict &&
-    !isResolvedLocally &&
-    !entry.submoduleRoot &&
-    (entry.area === 'unstaged' || entry.area === 'untracked')
-  const canStage = isStageableStatusEntry(entry)
-  const canUnstage = entry.area === 'staged'
+  const canDiscard = canDiscardStatusEntry(entry)
+  const canStage = canStageStatusEntry(entry)
+  // Why: a submodule-internal staged row is read-only from the parent worktree,
+  // so the parent repo's Unstage must not be offered (mirrors bulk unstage).
+  const canUnstage = canUnstageStatusEntry(entry)
 
   return (
     <SourceControlEntryContextMenu
