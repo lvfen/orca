@@ -59,6 +59,7 @@ export function CompareAgainstUpstreamSetting({
         <p className="text-xs text-muted-foreground">{description}</p>
       </div>
       <button
+        type="button"
         role="switch"
         aria-checked={settings.sourceControlCompareAgainstUpstream}
         onClick={() =>

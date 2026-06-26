@@ -7,10 +7,11 @@ import {
   resolveSourceControlBaseRef,
   resolveSourceControlCompareBaseRef,
   resolveSourceControlPickerBaseRef,
+  shouldClearBranchCompareForMissingBase,
   shouldRefreshBranchCompareForStatusHead,
   shouldShowCompareSummary
 } from './SourceControl'
-import type { GitBranchCompareSummary } from '../../../../shared/types'
+import type { GitBranchCompareSummary, GitUpstreamStatus } from '../../../../shared/types'
 
 type ReactElementLike = {
   type: unknown
@@ -273,6 +274,58 @@ describe('SourceControl compare summary', () => {
         fallbackBaseRef: 'origin/master'
       })
     ).toBeNull()
+  })
+
+  it('keeps the branch compare while upstream status is still loading', () => {
+    // remoteStatus undefined means upstream status has not loaded yet; the
+    // prefer-upstream setting makes compareBaseRef momentarily null in this gap.
+    expect(
+      shouldClearBranchCompareForMissingBase({
+        isFolder: false,
+        compareBaseRef: null,
+        remoteStatus: undefined
+      })
+    ).toBe(false)
+  })
+
+  it('clears the branch compare once upstream loads with no upstream and no base', () => {
+    const loadedNoUpstream: GitUpstreamStatus = {
+      hasUpstream: false,
+      ahead: 0,
+      behind: 0
+    }
+    expect(
+      shouldClearBranchCompareForMissingBase({
+        isFolder: false,
+        compareBaseRef: null,
+        remoteStatus: loadedNoUpstream
+      })
+    ).toBe(true)
+  })
+
+  it('keeps the branch compare when a compare base is resolved', () => {
+    expect(
+      shouldClearBranchCompareForMissingBase({
+        isFolder: false,
+        compareBaseRef: 'origin/main',
+        remoteStatus: undefined
+      })
+    ).toBe(false)
+  })
+
+  it('never clears the branch compare in folder mode', () => {
+    const loadedNoUpstream: GitUpstreamStatus = {
+      hasUpstream: false,
+      ahead: 0,
+      behind: 0
+    }
+    expect(
+      shouldClearBranchCompareForMissingBase({
+        isFolder: true,
+        compareBaseRef: null,
+        remoteStatus: loadedNoUpstream
+      })
+    ).toBe(false)
   })
 
   it('wires toolbar actions without rendering the dead view-mode toggle', () => {

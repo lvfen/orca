@@ -97,6 +97,11 @@ export const getGitPaneSearchEntries = createLocalizedCatalog(() => [
       ...translateSearchKeyword(
         'auto.components.settings.git.search.committedChanges',
         'committed changes'
+      ),
+      ...translateSearchKeyword('auto.components.settings.git.search.diffBase', 'diff base'),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.sourceControl',
+        'source control'
       )
     ]
   },

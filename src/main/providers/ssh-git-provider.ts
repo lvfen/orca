@@ -96,10 +96,22 @@ export class SshGitProvider implements IGitProvider {
   }
 
   async getSubmoduleStatus(worktreePath: string, submodulePath: string): Promise<GitStatusResult> {
-    return (await this.mux.request('git.submoduleStatus', {
-      worktreePath,
-      submodulePath
-    })) as GitStatusResult
+    try {
+      return (await this.mux.request('git.submoduleStatus', {
+        worktreePath,
+        submodulePath
+      })) as GitStatusResult
+    } catch (error) {
+      // Why: a newer desktop client may talk to an older relay that predates
+      // git.submoduleStatus; surface an actionable reconnect hint instead of a
+      // raw JSON-RPC method-not-found error in Source Control.
+      if (isJsonRpcMethodNotFoundError(error)) {
+        throw new Error(
+          'SSH submodule diff support is unavailable on this relay. Reconnect the SSH target to update Orca on the host, then try again.'
+        )
+      }
+      throw error
+    }
   }
 
   async checkIgnoredPaths(worktreePath: string, relativePaths: string[]): Promise<string[]> {

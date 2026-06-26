@@ -15,6 +15,7 @@ import {
 import { TooltipProvider } from '../ui/tooltip'
 import { matchesSettingsSearch } from './settings-search'
 import { SettingsSegmentedControl } from './SettingsFormControls'
+import { CompareAgainstUpstreamSetting } from './CompareAgainstUpstreamSetting'
 
 type ReactElementLike = {
   type: unknown
@@ -52,6 +53,19 @@ function findSegmentedControl(node: unknown): ReactElementLike {
   })
   if (!found) {
     throw new Error('segmented control not found')
+  }
+  return found
+}
+
+function findCompareAgainstUpstreamSwitch(node: unknown): ReactElementLike {
+  let found: ReactElementLike | null = null
+  visit(node, (entry) => {
+    if (entry.type === 'button' && entry.props.role === 'switch') {
+      found = entry
+    }
+  })
+  if (!found) {
+    throw new Error('compare-against-upstream switch not found')
   }
   return found
 }
@@ -178,44 +192,61 @@ describe('GitPane', () => {
   it('includes compare-against-current-branch search metadata', () => {
     expect(matchesSettingsSearch('compare base', getGitPaneSearchEntries())).toBe(true)
     expect(matchesSettingsSearch('upstream', getGitPaneSearchEntries())).toBe(true)
+    expect(matchesSettingsSearch('diff base', getGitPaneSearchEntries())).toBe(true)
+    expect(matchesSettingsSearch('source control', getGitPaneSearchEntries())).toBe(true)
   })
 
-  it('reflects the compare-against-current-branch setting state in the toggle', () => {
-    useAppStore.setState({ settingsSearchQuery: 'compare base' })
-    const off = renderToStaticMarkup(
-      React.createElement(
-        TooltipProvider,
-        null,
-        React.createElement(GitPane, {
-          settings: {
-            ...getDefaultSettings(os.homedir()),
-            sourceControlCompareAgainstUpstream: false
-          },
-          updateSettings: () => {},
-          writeSourceControlAiSettings: async () => {},
-          displayedGitUsername: 'brennan',
-          settingsSearchQuery: 'compare base'
-        })
-      )
+  it('reflects the compare-against-current-branch setting state in its own switch', () => {
+    const offSwitch = findCompareAgainstUpstreamSwitch(
+      CompareAgainstUpstreamSetting({
+        settings: {
+          ...getDefaultSettings(os.homedir()),
+          sourceControlCompareAgainstUpstream: false
+        },
+        updateSettings: () => {}
+      })
     )
-    const on = renderToStaticMarkup(
-      React.createElement(
-        TooltipProvider,
-        null,
-        React.createElement(GitPane, {
-          settings: {
-            ...getDefaultSettings(os.homedir()),
-            sourceControlCompareAgainstUpstream: true
-          },
-          updateSettings: () => {},
-          writeSourceControlAiSettings: async () => {},
-          displayedGitUsername: 'brennan',
-          settingsSearchQuery: 'compare base'
-        })
-      )
-    )
+    expect(offSwitch.props['aria-checked']).toBe(false)
 
-    expect(off).toContain('aria-checked="false"')
-    expect(on).toContain('aria-checked="true"')
+    const onSwitch = findCompareAgainstUpstreamSwitch(
+      CompareAgainstUpstreamSetting({
+        settings: {
+          ...getDefaultSettings(os.homedir()),
+          sourceControlCompareAgainstUpstream: true
+        },
+        updateSettings: () => {}
+      })
+    )
+    expect(onSwitch.props['aria-checked']).toBe(true)
+    // Why: the switch must not default to type="submit" inside a form.
+    expect(onSwitch.props.type).toBe('button')
+  })
+
+  it('toggles the compare-against-current-branch setting to its negated value on click', () => {
+    const updateSettings = vi.fn()
+    const offSwitch = findCompareAgainstUpstreamSwitch(
+      CompareAgainstUpstreamSetting({
+        settings: {
+          ...getDefaultSettings(os.homedir()),
+          sourceControlCompareAgainstUpstream: false
+        },
+        updateSettings
+      })
+    )
+    ;(offSwitch.props.onClick as () => void)()
+    expect(updateSettings).toHaveBeenCalledWith({ sourceControlCompareAgainstUpstream: true })
+
+    updateSettings.mockClear()
+    const onSwitch = findCompareAgainstUpstreamSwitch(
+      CompareAgainstUpstreamSetting({
+        settings: {
+          ...getDefaultSettings(os.homedir()),
+          sourceControlCompareAgainstUpstream: true
+        },
+        updateSettings
+      })
+    )
+    ;(onSwitch.props.onClick as () => void)()
+    expect(updateSettings).toHaveBeenCalledWith({ sourceControlCompareAgainstUpstream: false })
   })
 })

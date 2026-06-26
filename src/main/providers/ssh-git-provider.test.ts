@@ -85,6 +85,39 @@ describe('SshGitProvider', () => {
     })
   })
 
+  it('getSubmoduleStatus sends git.submoduleStatus request', async () => {
+    const statusResult = { entries: [], conflictOperation: 'unknown' }
+    mux.request.mockResolvedValue(statusResult)
+
+    const result = await provider.getSubmoduleStatus('/home/user/repo', 'vendor/lib')
+
+    expect(mux.request).toHaveBeenCalledWith('git.submoduleStatus', {
+      worktreePath: '/home/user/repo',
+      submodulePath: 'vendor/lib'
+    })
+    expect(result).toEqual(statusResult)
+  })
+
+  it('reports an actionable reconnect message when the relay lacks submodule status', async () => {
+    const methodNotFound = new Error('Method not found: git.submoduleStatus') as Error & {
+      code?: number
+    }
+    methodNotFound.code = -32601
+    mux.request.mockRejectedValueOnce(methodNotFound)
+
+    await expect(provider.getSubmoduleStatus('/home/user/repo', 'vendor/lib')).rejects.toThrow(
+      'SSH submodule diff support is unavailable on this relay. Reconnect the SSH target to update Orca on the host, then try again.'
+    )
+  })
+
+  it('rethrows non-method-not-found submodule status errors unchanged', async () => {
+    mux.request.mockRejectedValueOnce(new Error('fatal: not a submodule'))
+
+    await expect(provider.getSubmoduleStatus('/home/user/repo', 'vendor/lib')).rejects.toThrow(
+      'fatal: not a submodule'
+    )
+  })
+
   it('checkIgnoredPaths sends git.checkIgnored request', async () => {
     mux.request.mockResolvedValue(['dist/bundle.js'])
 

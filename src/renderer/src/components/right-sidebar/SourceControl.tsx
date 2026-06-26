@@ -378,6 +378,21 @@ export function resolveSourceControlCompareBaseRef(input: {
   return input.upstreamName?.trim() || null
 }
 
+// Why: only drop a stale branch-compare summary once we know there is truly no
+// compare base. While upstream status is still loading (remoteStatus undefined)
+// compareBaseRef can momentarily resolve to null, so clearing then would make
+// the committed-changes summary flicker until upstream loads.
+export function shouldClearBranchCompareForMissingBase(input: {
+  isFolder: boolean
+  compareBaseRef: string | null
+  remoteStatus: GitUpstreamStatus | undefined
+}): boolean {
+  if (input.isFolder || input.compareBaseRef) {
+    return false
+  }
+  return input.remoteStatus !== undefined
+}
+
 export function resolveSourceControlPickerBaseRef(input: {
   pinnedBaseRef?: string | null
   effectiveBaseRef?: string | null
@@ -4742,12 +4757,15 @@ function SourceControlInner(): React.JSX.Element {
     // Why: when there is no compare base (prefer-upstream setting on, branch has
     // no upstream), runBranchCompare bails out; drop any stale summary so the
     // committed-changes section and "vs" row disappear and only the working tree
-    // shows.
-    if (!activeWorktreeId || isFolder || compareBaseRef) {
+    // shows. Wait until upstream status has loaded so the summary doesn't flicker.
+    if (
+      !activeWorktreeId ||
+      !shouldClearBranchCompareForMissingBase({ isFolder, compareBaseRef, remoteStatus })
+    ) {
       return
     }
     clearGitBranchCompare(activeWorktreeId)
-  }, [activeWorktreeId, clearGitBranchCompare, compareBaseRef, isFolder])
+  }, [activeWorktreeId, clearGitBranchCompare, compareBaseRef, isFolder, remoteStatus])
 
   useEffect(() => {
     // Why: history shells out to git. Defer the first load until the user
