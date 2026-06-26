@@ -72,6 +72,7 @@ export function installTerminalImePunctuationForwarder(args: {
   terminalElement: HTMLElement | null | undefined
   isComposing: () => boolean
   sendInput: (data: string) => void
+  isEnabled?: () => boolean
 }): TerminalImePunctuationForwarder {
   if (!args.terminalElement) {
     return {
@@ -89,6 +90,9 @@ export function installTerminalImePunctuationForwarder(args: {
       return false
     }
     if (event.type === 'keydown') {
+      if (args.isEnabled?.() === false) {
+        return false
+      }
       // Arm forwarding so the upcoming input event is sent to the PTY.
       pendingForward = true
       claimedPress = true
@@ -118,12 +122,14 @@ export function installTerminalImePunctuationForwarder(args: {
       return
     }
     if (event.inputType !== 'insertText') {
+      pendingForward = false
       return
     }
     pendingForward = false
     if (event.data) {
       args.sendInput(event.data)
     }
+    event.stopImmediatePropagation()
     // The glyph only landed in xterm's helper textarea because we let the
     // keydown reach the native pipeline; clear it back to its empty resting
     // state so it cannot accumulate across keystrokes.

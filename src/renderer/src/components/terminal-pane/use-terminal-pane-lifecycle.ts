@@ -55,6 +55,7 @@ import { showOsc52ClipboardBlockedToast } from './osc52-clipboard-blocked-toast'
 import { parseOsc7 } from './parse-osc7'
 import { resolveTerminalJisYenInput } from './terminal-jis-yen-input'
 import { installTerminalImeCompositionTracker } from './terminal-ime-composition-tracker'
+import { getMacCjkInputSourceTracker } from './terminal-ime-input-source'
 import { installTerminalImePunctuationForwarder } from './terminal-ime-punctuation-forwarder'
 import {
   shouldBypassXtermKeyboardEvent,
@@ -691,18 +692,22 @@ export function useTerminalPaneLifecycle({
         // encoder runs, letting the browser and Electron paths fire normally.
         // See xterm-bypass-policy.ts for the rule derivation.
         let pendingTerminalInterruptKeyup = false
+        const isMac = navigator.userAgent.includes('Mac')
+        const macCjkInputSourceTracker = isMac ? getMacCjkInputSourceTracker() : null
         const imeCompositionTracker = installTerminalImeCompositionTracker(pane.terminal.element)
         imeCompositionDisposablesRef.current.set(pane.id, imeCompositionTracker)
-        // Why: rescue full-width punctuation from IMEs that report the half-width
-        // ASCII symbol on keydown — see terminal-ime-punctuation-forwarder.ts.
+        // Why: this workaround is for macOS IMEs; elsewhere it can bypass
+        // xterm's kitty CSI-u encoding for ordinary punctuation. Gate it to CJK
+        // input sources so direct Japanese/Chinese punctuation works without
+        // changing plain US/European terminal key handling.
         const imePunctuationForwarder = installTerminalImePunctuationForwarder({
           terminalElement: pane.terminal.element,
           isComposing: () => imeCompositionTracker.isActive(),
-          sendInput: (data) => pane.terminal.input(data)
+          sendInput: (data) => pane.terminal.input(data),
+          isEnabled: () => macCjkInputSourceTracker?.isActive() === true
         })
         imePunctuationForwarderDisposablesRef.current.set(pane.id, imePunctuationForwarder)
         pane.terminal.attachCustomKeyEventHandler((e) => {
-          const isMac = navigator.userAgent.includes('Mac')
           if (
             shouldSuppressTerminalImeKeyboardEvent(e, {
               compositionActive: imeCompositionTracker.isActive()

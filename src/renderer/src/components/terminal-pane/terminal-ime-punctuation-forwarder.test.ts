@@ -59,6 +59,12 @@ describe('isImePunctuationCandidate', () => {
   it('rejects non keyboard event types', () => {
     expect(isImePunctuationCandidate(keyEvent({ type: 'input' }), false)).toBe(false)
   })
+
+  it('does not treat Japanese text or punctuation keys as ASCII punctuation candidates', () => {
+    expect(isImePunctuationCandidate(keyEvent({ key: 'あ' }), false)).toBe(false)
+    expect(isImePunctuationCandidate(keyEvent({ key: '。' }), false)).toBe(false)
+    expect(isImePunctuationCandidate(keyEvent({ key: '、' }), false)).toBe(false)
+  })
 })
 
 describe('installTerminalImePunctuationForwarder', () => {
@@ -76,18 +82,35 @@ describe('installTerminalImePunctuationForwarder', () => {
 
   it('forwards the IME-committed full-width glyph from the input event', () => {
     const sendInput = vi.fn()
+    const laterInputListener = vi.fn()
     const forwarder = installTerminalImePunctuationForwarder({
       terminalElement: element,
       isComposing: () => false,
       sendInput
     })
+    element.addEventListener('input', laterInputListener, true)
 
     expect(forwarder.claimKeyEvent(keyEvent({ key: ',' }))).toBe(true)
     textarea.value = '，'
     dispatchInsertText(textarea, '，')
 
     expect(sendInput).toHaveBeenCalledExactlyOnceWith('，')
+    expect(laterInputListener).not.toHaveBeenCalled()
     expect(textarea.value).toBe('')
+  })
+
+  it('forwards Japanese direct punctuation committed from a punctuation key', () => {
+    const sendInput = vi.fn()
+    const forwarder = installTerminalImePunctuationForwarder({
+      terminalElement: element,
+      isComposing: () => false,
+      sendInput
+    })
+
+    expect(forwarder.claimKeyEvent(keyEvent({ key: '.' }))).toBe(true)
+    dispatchInsertText(textarea, '。')
+
+    expect(sendInput).toHaveBeenCalledExactlyOnceWith('。')
   })
 
   it('forwards a plain ASCII symbol unchanged when the IME does not convert it', () => {
@@ -142,6 +165,24 @@ describe('installTerminalImePunctuationForwarder', () => {
       new InputEvent('input', { data: '，', inputType: 'insertCompositionText', bubbles: true })
     )
     expect(sendInput).not.toHaveBeenCalled()
+  })
+
+  it('clears pending forwarding when a Japanese composition input takes over', () => {
+    const sendInput = vi.fn()
+    const forwarder = installTerminalImePunctuationForwarder({
+      terminalElement: element,
+      isComposing: () => false,
+      sendInput
+    })
+
+    expect(forwarder.claimKeyEvent(keyEvent({ key: ',' }))).toBe(true)
+    textarea.dispatchEvent(
+      new InputEvent('input', { data: 'に', inputType: 'insertCompositionText', bubbles: true })
+    )
+    dispatchInsertText(textarea, '日本語')
+
+    expect(sendInput).not.toHaveBeenCalled()
+    expect(forwarder.claimKeyEvent(keyEvent({ type: 'keyup', key: ',' }))).toBe(true)
   })
 
   it('clears the pending forward on a matching keyup so later inserts are not forwarded', () => {
@@ -249,5 +290,37 @@ describe('installTerminalImePunctuationForwarder', () => {
 
     expect(forwarder.claimKeyEvent(keyEvent({ key: ',' }))).toBe(false)
     expect(() => forwarder.dispose()).not.toThrow()
+  })
+
+  it('is disabled outside the macOS IME workaround path', () => {
+    const sendInput = vi.fn()
+    const forwarder = installTerminalImePunctuationForwarder({
+      terminalElement: element,
+      isComposing: () => false,
+      sendInput,
+      isEnabled: () => false
+    })
+
+    expect(forwarder.claimKeyEvent(keyEvent({ key: ',' }))).toBe(false)
+    dispatchInsertText(textarea, '，')
+    expect(sendInput).not.toHaveBeenCalled()
+  })
+
+  it('can become enabled after the input source changes to a CJK IME', () => {
+    const sendInput = vi.fn()
+    let enabled = false
+    const forwarder = installTerminalImePunctuationForwarder({
+      terminalElement: element,
+      isComposing: () => false,
+      sendInput,
+      isEnabled: () => enabled
+    })
+
+    expect(forwarder.claimKeyEvent(keyEvent({ key: ',' }))).toBe(false)
+    enabled = true
+
+    expect(forwarder.claimKeyEvent(keyEvent({ key: ',' }))).toBe(true)
+    dispatchInsertText(textarea, '、')
+    expect(sendInput).toHaveBeenCalledExactlyOnceWith('、')
   })
 })
