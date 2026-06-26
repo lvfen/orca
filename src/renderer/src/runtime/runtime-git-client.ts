@@ -9,6 +9,7 @@ import type {
   GitForkSyncExpectedUpstream,
   GitForkSyncResult,
   GitPushTarget,
+  GitStagingArea,
   GitStatusResult,
   GitUpstreamStatus,
   GlobalSettings
@@ -150,14 +151,16 @@ export async function getRuntimeGitStatus(
 
 export async function getRuntimeGitSubmoduleStatus(
   context: RuntimeGitContext,
-  submodulePath: string
+  submodulePath: string,
+  area: GitStagingArea = 'unstaged'
 ): Promise<GitStatusResult> {
   const target = getActiveRuntimeTarget(context.settings)
   if (target.kind === 'local' || !context.worktreeId) {
     return window.api.git.submoduleStatus({
       worktreePath: context.worktreePath,
       submodulePath,
-      connectionId: context.connectionId
+      connectionId: context.connectionId,
+      area
     })
   }
   return callRuntimeRpc<GitStatusResult>(
@@ -165,7 +168,8 @@ export async function getRuntimeGitSubmoduleStatus(
     'git.submoduleStatus',
     {
       worktree: toRuntimeWorktreeSelector(context.worktreeId),
-      submodulePath
+      submodulePath,
+      area
     },
     { timeoutMs: 15_000 }
   )

@@ -133,13 +133,17 @@ async function readWorkingSubmoduleHead(
 export async function resolveSubmoduleCommitRange(
   git: GitExec,
   worktreePath: string,
-  submodulePath: string
+  submodulePath: string,
+  staged = false
 ): Promise<{ fromOid: string; toOid: string }> {
   const submoduleWorktreePath = path.join(worktreePath, submodulePath)
-  const fromOid =
-    (await readGitlinkOidFromIndex(git, worktreePath, submodulePath)) ||
-    (await readGitlinkOidFromTree(git, worktreePath, 'HEAD', submodulePath))
-  const toOid = await readWorkingSubmoduleHead(git, submoduleWorktreePath)
+  const fromOid = staged
+    ? await readGitlinkOidFromTree(git, worktreePath, 'HEAD', submodulePath)
+    : (await readGitlinkOidFromIndex(git, worktreePath, submodulePath)) ||
+      (await readGitlinkOidFromTree(git, worktreePath, 'HEAD', submodulePath))
+  const toOid = staged
+    ? await readGitlinkOidFromIndex(git, worktreePath, submodulePath)
+    : await readWorkingSubmoduleHead(git, submoduleWorktreePath)
   return { fromOid, toOid }
 }
 

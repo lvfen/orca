@@ -101,9 +101,23 @@ describe('SshGitProvider', () => {
 
     expect(mux.request).toHaveBeenCalledWith('git.submoduleStatus', {
       worktreePath: '/home/user/repo',
-      submodulePath: 'vendor/lib'
+      submodulePath: 'vendor/lib',
+      area: 'unstaged'
     })
     expect(result).toEqual(statusResult)
+  })
+
+  it('getSubmoduleStatus forwards the requested source-control area', async () => {
+    const statusResult = { entries: [], conflictOperation: 'unknown' }
+    mux.request.mockResolvedValue(statusResult)
+
+    await provider.getSubmoduleStatus('/home/user/repo', 'vendor/lib', 'staged')
+
+    expect(mux.request).toHaveBeenCalledWith('git.submoduleStatus', {
+      worktreePath: '/home/user/repo',
+      submodulePath: 'vendor/lib',
+      area: 'staged'
+    })
   })
 
   it('reports an actionable reconnect message when the relay lacks submodule status', async () => {

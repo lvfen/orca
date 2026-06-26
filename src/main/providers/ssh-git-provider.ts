@@ -13,6 +13,7 @@ import type {
   GitForkSyncExpectedUpstream,
   GitForkSyncResult,
   GitPushTarget,
+  GitStagingArea,
   GitUpstreamStatus,
   GitWorktreeInfo,
   RemoveWorktreeResult
@@ -110,14 +111,19 @@ export class SshGitProvider implements IGitProvider {
     })) as GitStatusResult
   }
 
-  async getSubmoduleStatus(worktreePath: string, submodulePath: string): Promise<GitStatusResult> {
+  async getSubmoduleStatus(
+    worktreePath: string,
+    submodulePath: string,
+    area: GitStagingArea = 'unstaged'
+  ): Promise<GitStatusResult> {
     // Why: mirror getStatus() — refreshing submodule state must invalidate
     // in-flight diff reads so a later diff can't reuse a stale pending RPC.
     this.gitDiffReadDedupe.clear()
     try {
       return (await this.mux.request('git.submoduleStatus', {
         worktreePath,
-        submodulePath
+        submodulePath,
+        area
       })) as GitStatusResult
     } catch (error) {
       // Why: a newer desktop client may talk to an older relay that predates

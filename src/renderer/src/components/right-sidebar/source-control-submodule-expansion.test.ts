@@ -3,6 +3,7 @@ import type { GitStatusEntry } from '../../../../shared/types'
 import {
   buildSubmoduleChildNodes,
   collectListSelectionEntries,
+  getSubmoduleExpansionKey,
   injectExpandedSubmoduleEntries,
   injectExpandedSubmoduleRows,
   isExpandableSubmoduleEntry,
@@ -12,6 +13,7 @@ import {
 
 const LOADING = 'Loading submodule changes…'
 const EMPTY = 'No changes in submodule'
+const FLUTTER_KEY = 'unstaged::flutter_mine'
 
 function submoduleEntry(partial: Partial<GitStatusEntry> & { path: string }): GitStatusEntry {
   return {
@@ -115,13 +117,7 @@ describe('injectExpandedSubmoduleRows', () => {
 
   it('emits a loading placeholder when status is missing or loading', () => {
     const node = fileNode(submoduleEntry({ path: 'flutter_mine' }))
-    const result = injectExpandedSubmoduleRows(
-      [node],
-      new Set(['flutter_mine']),
-      {},
-      LOADING,
-      EMPTY
-    )
+    const result = injectExpandedSubmoduleRows([node], new Set([FLUTTER_KEY]), {}, LOADING, EMPTY)
     expect(result).toHaveLength(2)
     expect(result[1]).toMatchObject({
       type: 'submodule-placeholder',
@@ -134,11 +130,11 @@ describe('injectExpandedSubmoduleRows', () => {
   it('emits an error placeholder carrying the error message', () => {
     const node = fileNode(submoduleEntry({ path: 'flutter_mine' }))
     const statuses: Record<string, SubmoduleStatusState> = {
-      flutter_mine: { status: 'error', error: 'boom' }
+      [FLUTTER_KEY]: { status: 'error', error: 'boom' }
     }
     const result = injectExpandedSubmoduleRows(
       [node],
-      new Set(['flutter_mine']),
+      new Set([FLUTTER_KEY]),
       statuses,
       LOADING,
       EMPTY
@@ -153,11 +149,11 @@ describe('injectExpandedSubmoduleRows', () => {
   it('emits an empty placeholder when the submodule has no inner entries', () => {
     const node = fileNode(submoduleEntry({ path: 'flutter_mine' }))
     const statuses: Record<string, SubmoduleStatusState> = {
-      flutter_mine: { status: 'loaded', entries: [] }
+      [FLUTTER_KEY]: { status: 'loaded', entries: [] }
     }
     const result = injectExpandedSubmoduleRows(
       [node],
-      new Set(['flutter_mine']),
+      new Set([FLUTTER_KEY]),
       statuses,
       LOADING,
       EMPTY
@@ -172,14 +168,14 @@ describe('injectExpandedSubmoduleRows', () => {
   it('injects child file rows when inner status is loaded', () => {
     const node = fileNode(submoduleEntry({ path: 'flutter_mine' }))
     const statuses: Record<string, SubmoduleStatusState> = {
-      flutter_mine: {
+      [FLUTTER_KEY]: {
         status: 'loaded',
         entries: [{ path: 'lib/main.dart', status: 'modified', area: 'unstaged' }]
       }
     }
     const result = injectExpandedSubmoduleRows(
       [node],
-      new Set(['flutter_mine']),
+      new Set([FLUTTER_KEY]),
       statuses,
       LOADING,
       EMPTY
@@ -201,14 +197,14 @@ describe('injectExpandedSubmoduleRows', () => {
       })
     )
     const statuses: Record<string, SubmoduleStatusState> = {
-      flutter_mine: {
+      [FLUTTER_KEY]: {
         status: 'loaded',
         entries: [{ path: 'lib/main.dart', status: 'modified', area: 'unstaged' }]
       }
     }
     const result = injectExpandedSubmoduleRows(
       [node],
-      new Set(['flutter_mine']),
+      new Set([FLUTTER_KEY]),
       statuses,
       LOADING,
       EMPTY
@@ -219,7 +215,13 @@ describe('injectExpandedSubmoduleRows', () => {
 
   it('never expands a non-submodule entry that is in the expanded set', () => {
     const node = fileNode({ path: 'src/a.ts', status: 'modified', area: 'unstaged' })
-    const result = injectExpandedSubmoduleRows([node], new Set(['src/a.ts']), {}, LOADING, EMPTY)
+    const result = injectExpandedSubmoduleRows(
+      [node],
+      new Set(['unstaged::src/a.ts']),
+      {},
+      LOADING,
+      EMPTY
+    )
     expect(result).toEqual([node])
   })
 })
@@ -235,7 +237,7 @@ describe('injectExpandedSubmoduleEntries (list view)', () => {
     const entry = submoduleEntry({ path: 'flutter_mine' })
     const result = injectExpandedSubmoduleEntries(
       [entry],
-      new Set(['flutter_mine']),
+      new Set([FLUTTER_KEY]),
       {},
       LOADING,
       EMPTY
@@ -255,14 +257,14 @@ describe('injectExpandedSubmoduleEntries (list view)', () => {
       submodule: { commitChanged: true, trackedChanges: false, untrackedChanges: false }
     })
     const statuses: Record<string, SubmoduleStatusState> = {
-      flutter_mine: {
+      [FLUTTER_KEY]: {
         status: 'loaded',
         entries: [{ path: 'lib/main.dart', status: 'modified', area: 'unstaged' }]
       }
     }
     const result = injectExpandedSubmoduleEntries(
       [entry],
-      new Set(['flutter_mine']),
+      new Set([FLUTTER_KEY]),
       statuses,
       LOADING,
       EMPTY
@@ -278,11 +280,11 @@ describe('injectExpandedSubmoduleEntries (list view)', () => {
   it('emits an empty placeholder when loaded with no inner entries', () => {
     const entry = submoduleEntry({ path: 'flutter_mine' })
     const statuses: Record<string, SubmoduleStatusState> = {
-      flutter_mine: { status: 'loaded', entries: [] }
+      [FLUTTER_KEY]: { status: 'loaded', entries: [] }
     }
     const result = injectExpandedSubmoduleEntries(
       [entry],
-      new Set(['flutter_mine']),
+      new Set([FLUTTER_KEY]),
       statuses,
       LOADING,
       EMPTY
@@ -302,14 +304,14 @@ describe('collectListSelectionEntries', () => {
       submodule: { commitChanged: true, trackedChanges: false, untrackedChanges: false }
     })
     const statuses: Record<string, SubmoduleStatusState> = {
-      flutter_mine: {
+      [FLUTTER_KEY]: {
         status: 'loaded',
         entries: [{ path: 'lib/main.dart', status: 'modified', area: 'unstaged' }]
       }
     }
     const rows = injectExpandedSubmoduleEntries(
       [entry],
-      new Set(['flutter_mine']),
+      new Set([FLUTTER_KEY]),
       statuses,
       LOADING,
       EMPTY
@@ -334,16 +336,50 @@ describe('collectListSelectionEntries', () => {
 
   it('drops loading placeholders from selection entries', () => {
     const entry = submoduleEntry({ path: 'flutter_mine' })
-    const rows = injectExpandedSubmoduleEntries(
-      [entry],
-      new Set(['flutter_mine']),
-      {},
-      LOADING,
-      EMPTY
-    )
+    const rows = injectExpandedSubmoduleEntries([entry], new Set([FLUTTER_KEY]), {}, LOADING, EMPTY)
 
     expect(collectListSelectionEntries(rows)).toEqual([
       { key: 'unstaged::flutter_mine', entry, area: 'unstaged' }
     ])
+  })
+})
+
+describe('getSubmoduleExpansionKey', () => {
+  it('separates staged and unstaged rows for the same submodule path', () => {
+    expect(getSubmoduleExpansionKey(submoduleEntry({ path: 'flutter_mine', area: 'staged' }))).toBe(
+      'staged::flutter_mine'
+    )
+    expect(
+      getSubmoduleExpansionKey(submoduleEntry({ path: 'flutter_mine', area: 'unstaged' }))
+    ).toBe(FLUTTER_KEY)
+  })
+
+  it('keeps staged children in the staged area for diff routing', () => {
+    const entry = submoduleEntry({
+      path: 'flutter_mine',
+      area: 'staged',
+      submodule: { commitChanged: true, trackedChanges: false, untrackedChanges: false }
+    })
+    const result = injectExpandedSubmoduleEntries(
+      [entry],
+      new Set(['staged::flutter_mine']),
+      {
+        'staged::flutter_mine': {
+          status: 'loaded',
+          entries: [{ path: 'lib/main.dart', status: 'modified', area: 'unstaged' }]
+        }
+      },
+      LOADING,
+      EMPTY
+    )
+
+    expect(result[1]).toMatchObject({
+      type: 'entry',
+      entry: {
+        path: 'flutter_mine/lib/main.dart',
+        area: 'staged',
+        submoduleRoot: 'flutter_mine'
+      }
+    })
   })
 })

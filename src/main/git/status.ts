@@ -78,6 +78,7 @@ const statusReadsInFlight = new Map<string, Promise<GitStatusResult>>()
 function clearGitReadInvalidationState(): void {
   gitDiffReadDedupe.clear()
   statusReadsInFlight.clear()
+  submodulePathsCache.clear()
 }
 
 export function clearSubmodulePathsCacheForTests(): void {
@@ -318,17 +319,20 @@ export function resolveSubmoduleWorktreePath(worktreePath: string, submodulePath
 export async function getSubmoduleStatus(
   worktreePath: string,
   submodulePath: string,
-  options: GitRuntimeOptions = {}
+  options: GitRuntimeOptions & { staged?: boolean } = {}
 ): Promise<GitStatusResult> {
   const submoduleWorktreePath = resolveSubmoduleWorktreePath(worktreePath, submodulePath)
   const workingResult = await getStatus(submoduleWorktreePath, options)
   // Why: a moved gitlink (clean worktree) has no uncommitted status rows; its
   // real changes live between the parent-recorded commit and the checked-out
   // commit. Surface those as inner rows so the expansion isn't empty.
-  const fromOid =
-    (await readGitlinkOidFromIndex(worktreePath, submodulePath, options)) ||
-    (await readGitlinkOidFromTree(worktreePath, 'HEAD', submodulePath, options))
-  const toOid = await readWorkingSubmoduleHead(submoduleWorktreePath, options)
+  const fromOid = options.staged
+    ? await readGitlinkOidFromTree(worktreePath, 'HEAD', submodulePath, options)
+    : (await readGitlinkOidFromIndex(worktreePath, submodulePath, options)) ||
+      (await readGitlinkOidFromTree(worktreePath, 'HEAD', submodulePath, options))
+  const toOid = options.staged
+    ? await readGitlinkOidFromIndex(worktreePath, submodulePath, options)
+    : await readWorkingSubmoduleHead(submoduleWorktreePath, options)
   if (fromOid && toOid && fromOid !== toOid) {
     const rangeEntries = await computeSubmoduleRangeEntries(
       submoduleWorktreePath,
@@ -336,6 +340,9 @@ export async function getSubmoduleStatus(
       toOid,
       options
     )
+    if (options.staged) {
+      return { ...workingResult, entries: rangeEntries }
+    }
     const rangePaths = new Set(rangeEntries.map((entry) => entry.path))
     // Range rows win on overlap so the diff matches getDiff's commit-range route.
     const entries = [
@@ -343,6 +350,9 @@ export async function getSubmoduleStatus(
       ...workingResult.entries.filter((entry) => !rangePaths.has(entry.path))
     ]
     return { ...workingResult, entries }
+  }
+  if (options.staged) {
+    return { ...workingResult, entries: [] }
   }
   return workingResult
 }
@@ -1081,10 +1091,13 @@ async function loadDiff(
         )
       }
       const innerPath = normalizedFilePath.slice(matchedSubmodule.length + 1)
-      const fromOid =
-        (await readGitlinkOidFromIndex(worktreePath, matchedSubmodule, options)) ||
-        (await readGitlinkOidFromTree(worktreePath, 'HEAD', matchedSubmodule, options))
-      const toOid = await readWorkingSubmoduleHead(submoduleWorktreePath, options)
+      const fromOid = staged
+        ? await readGitlinkOidFromTree(worktreePath, 'HEAD', matchedSubmodule, options)
+        : (await readGitlinkOidFromIndex(worktreePath, matchedSubmodule, options)) ||
+          (await readGitlinkOidFromTree(worktreePath, 'HEAD', matchedSubmodule, options))
+      const toOid = staged
+        ? await readGitlinkOidFromIndex(worktreePath, matchedSubmodule, options)
+        : await readWorkingSubmoduleHead(submoduleWorktreePath, options)
       // Why: when the gitlink moved but the submodule worktree is clean, the
       // file's change lives in committed history — diff the two commits. Only
       // fall back to the working-tree blob read when the commit didn't move.

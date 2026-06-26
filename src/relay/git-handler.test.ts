@@ -721,6 +721,36 @@ describe('GitHandler', () => {
       expect(normalizeGitFileText(diff.originalContent)).toBe('v1\n')
       expect(normalizeGitFileText(diff.modifiedContent)).toBe('v2\n')
     })
+
+    it('lists and diffs staged submodule pointer changes from parent HEAD to index', async () => {
+      gitInit(tmpDir)
+      writeFileSync(path.join(tmpDir, 'root.txt'), 'root')
+      gitCommit(tmpDir, 'initial')
+      const sub = addSubmodule(tmpDir, 'flutter_mine')
+      writeFileSync(path.join(sub, 'lib.txt'), 'v2\n')
+      execFileSync('git', ['add', 'lib.txt'], { cwd: sub, stdio: 'pipe' })
+      gitCommit(sub, 'sub second')
+      execFileSync('git', ['add', 'flutter_mine'], { cwd: tmpDir, stdio: 'pipe' })
+
+      const status = (await dispatcher.callRequest('git.submoduleStatus', {
+        worktreePath: tmpDir,
+        submodulePath: 'flutter_mine',
+        area: 'staged'
+      })) as { entries: { path?: unknown; status?: unknown; area?: unknown }[] }
+      const ranged = status.entries.find((e) => e.path === 'lib.txt')
+      expect(ranged).toBeDefined()
+      expect(ranged!.status).toBe('modified')
+      expect(ranged!.area).toBe('unstaged')
+
+      const diff = (await dispatcher.callRequest('git.diff', {
+        worktreePath: tmpDir,
+        filePath: 'flutter_mine/lib.txt',
+        staged: true
+      })) as { kind: string; originalContent: string; modifiedContent: string }
+      expect(diff.kind).toBe('text')
+      expect(normalizeGitFileText(diff.originalContent)).toBe('v1\n')
+      expect(normalizeGitFileText(diff.modifiedContent)).toBe('v2\n')
+    })
   })
 
   describe('discard', () => {

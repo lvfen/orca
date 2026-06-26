@@ -73,14 +73,30 @@ export const getGitPaneSearchEntries = createLocalizedCatalog(() => [
   {
     title: translate(
       'auto.components.settings.git.search.compareAgainstUpstreamTitle',
-      'Compare Against Current Branch'
+      'Default Compare Base'
     ),
     description: translate(
       'auto.components.settings.git.search.compareAgainstUpstreamDescription',
-      "Default the Source Control compare base to the current branch's upstream so it prioritizes local changes, instead of the repository default branch. Only affects the compare view, not the Pull Request or rebase target."
+      "Choose which base Source Control uses by default for committed-change comparisons. Branch upstream follows the current branch automatically and falls back to the repository default branch when no upstream exists. You can still change the compare base per worktree from that worktree's Git panel. Pull Request and rebase targets don't change."
     ),
     keywords: [
       ...translateSearchKeyword('auto.components.settings.git.search.compareBase', 'compare base'),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.defaultCompareBase',
+        'default compare base'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.defaultBranch',
+        'default branch'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.repositoryDefault',
+        'repository default'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.git.search.branchUpstream',
+        'branch upstream'
+      ),
       ...translateSearchKeyword(
         'auto.components.settings.git.search.currentBranch',
         'current branch'

@@ -91,6 +91,7 @@ import {
 } from './source-control-tree'
 import {
   collectListSelectionEntries,
+  getSubmoduleExpansionKey,
   injectExpandedSubmoduleEntries,
   injectExpandedSubmoduleRows,
   isExpandableSubmoduleEntry,
@@ -358,10 +359,10 @@ export function resolveSourceControlBaseRef(input: {
 // Why: the compare/diff view's base is conceptually distinct from the PR/rebase
 // merge target (effectiveBaseRef). When the setting is on, default the compare
 // base to the current branch's upstream so the panel surfaces local changes
-// instead of the full delta vs the repo default branch. `null` means "no
-// committed-changes comparison" (only the working tree), used when a branch
-// has no upstream. When the setting is off, fall back to effectiveBaseRef so
-// behavior is unchanged.
+// instead of the full delta vs the repo default branch. Branches without an
+// upstream fall back to effectiveBaseRef so the automatic policy never makes
+// the committed-changes comparison disappear unexpectedly. When the setting is
+// off, fall back to effectiveBaseRef so behavior is unchanged.
 export function resolveSourceControlCompareBaseRef(input: {
   enabled: boolean
   worktreeBaseRef?: string | null
@@ -376,7 +377,7 @@ export function resolveSourceControlCompareBaseRef(input: {
   if (pinned) {
     return pinned
   }
-  return input.upstreamName?.trim() || null
+  return input.upstreamName?.trim() || input.fallbackBaseRef?.trim() || null
 }
 
 // Why: only drop a stale branch-compare summary once we know there is truly no
@@ -1143,7 +1144,7 @@ function SourceControlInner(): React.JSX.Element {
 
   const isFolder = activeRepo ? isFolderRepo(activeRepo) : false
   const worktreePath = activeWorktree?.path ?? null
-  const { expandedSubmodulePaths, submoduleStatusByPath, toggleSubmodule } =
+  const { expandedSubmoduleKeys, submoduleStatusByKey, toggleSubmodule } =
     useSourceControlSubmoduleStatus({
       activeWorktreeId,
       worktreePath,
@@ -1685,8 +1686,8 @@ function SourceControlInner(): React.JSX.Element {
     for (const section of displaySections) {
       rows[section.id] = injectExpandedSubmoduleRows(
         flattenSourceControlTree(treeRootsBySection[section.id] ?? [], collapsedTreeDirs),
-        expandedSubmodulePaths,
-        submoduleStatusByPath,
+        expandedSubmoduleKeys,
+        submoduleStatusByKey,
         SUBMODULE_LOADING_LABEL,
         SUBMODULE_EMPTY_LABEL
       )
@@ -1696,8 +1697,8 @@ function SourceControlInner(): React.JSX.Element {
     collapsedTreeDirs,
     displaySections,
     treeRootsBySection,
-    expandedSubmodulePaths,
-    submoduleStatusByPath
+    expandedSubmoduleKeys,
+    submoduleStatusByKey
   ])
 
   // List view needs the same lazy submodule expansion as the tree view, just
@@ -1707,14 +1708,14 @@ function SourceControlInner(): React.JSX.Element {
     for (const section of displaySections) {
       rows[section.id] = injectExpandedSubmoduleEntries(
         section.items,
-        expandedSubmodulePaths,
-        submoduleStatusByPath,
+        expandedSubmoduleKeys,
+        submoduleStatusByKey,
         SUBMODULE_LOADING_LABEL,
         SUBMODULE_EMPTY_LABEL
       )
     }
     return rows
-  }, [displaySections, expandedSubmodulePaths, submoduleStatusByPath])
+  }, [displaySections, expandedSubmoduleKeys, submoduleStatusByKey])
 
   const branchTreeRoots = useMemo(
     () => compactSourceControlTree(buildSourceControlTree('branch', filteredBranchEntries)),
@@ -4752,8 +4753,8 @@ function SourceControlInner(): React.JSX.Element {
   }, [activeWorktreeId, compareBaseRef, isBranchVisible, isFolder, worktreePath])
 
   useEffect(() => {
-    // Why: when there is no compare base (prefer-upstream setting on, branch has
-    // no upstream), runBranchCompare bails out; drop any stale summary so the
+    // Why: when the compare-base policy resolves to no base, runBranchCompare
+    // bails out; drop any stale summary so the
     // committed-changes section and "vs" row disappear and only the working tree
     // shows. Wait until upstream status has loaded so the summary doesn't flicker.
     if (
@@ -5827,8 +5828,10 @@ function SourceControlInner(): React.JSX.Element {
                             }
                             const submoduleExpansion = isExpandableSubmoduleEntry(node.entry)
                               ? {
-                                  isExpanded: expandedSubmodulePaths.has(node.entry.path),
-                                  onToggle: () => toggleSubmodule(node.entry.path)
+                                  isExpanded: expandedSubmoduleKeys.has(
+                                    getSubmoduleExpansionKey(node.entry)
+                                  ),
+                                  onToggle: () => toggleSubmodule(node.entry)
                                 }
                               : undefined
                             return (
@@ -5870,8 +5873,10 @@ function SourceControlInner(): React.JSX.Element {
                             const key = `${entry.area}::${entry.path}`
                             const submoduleExpansion = isExpandableSubmoduleEntry(entry)
                               ? {
-                                  isExpanded: expandedSubmodulePaths.has(entry.path),
-                                  onToggle: () => toggleSubmodule(entry.path)
+                                  isExpanded: expandedSubmoduleKeys.has(
+                                    getSubmoduleExpansionKey(entry)
+                                  ),
+                                  onToggle: () => toggleSubmodule(entry)
                                 }
                               : undefined
                             return (

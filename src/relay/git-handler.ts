@@ -62,6 +62,15 @@ const execFileAsync = promisify(execFile)
 const MAX_GIT_BUFFER = 10 * 1024 * 1024
 const BULK_CHUNK_SIZE = 100
 
+function resolveSubmoduleStatusArea(
+  params: Record<string, unknown>
+): 'staged' | 'unstaged' | 'untracked' {
+  if (params.area === 'staged' || params.area === 'unstaged' || params.area === 'untracked') {
+    return params.area
+  }
+  return 'unstaged'
+}
+
 function execFileWithStdin(
   command: string,
   args: string[],
@@ -227,6 +236,8 @@ export class GitHandler {
   private async getSubmoduleStatus(params: Record<string, unknown>) {
     const worktreePath = params.worktreePath as string
     const submodulePath = params.submodulePath as string
+    const area = resolveSubmoduleStatusArea(params)
+    const staged = area === 'staged'
     const resolved = path.resolve(worktreePath, submodulePath)
     const rel = path.relative(path.resolve(worktreePath), resolved)
     if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
@@ -242,7 +253,8 @@ export class GitHandler {
     const { fromOid, toOid } = await resolveSubmoduleCommitRange(
       this.git.bind(this),
       worktreePath,
-      submodulePath
+      submodulePath,
+      staged
     )
     if (fromOid && toOid && fromOid !== toOid) {
       const rangeEntries = await computeSubmoduleRangeEntries(
@@ -251,12 +263,18 @@ export class GitHandler {
         fromOid,
         toOid
       )
+      if (staged) {
+        return { ...workingResult, entries: rangeEntries }
+      }
       const rangePaths = new Set(rangeEntries.map((entry) => entry.path))
       const entries = [
         ...rangeEntries,
         ...workingResult.entries.filter((entry) => !rangePaths.has(entry.path))
       ]
       return { ...workingResult, entries }
+    }
+    if (staged) {
+      return { ...workingResult, entries: [] }
     }
     return workingResult
   }
@@ -316,7 +334,8 @@ export class GitHandler {
             const { fromOid, toOid } = await resolveSubmoduleCommitRange(
               this.git.bind(this),
               worktreePath,
-              matchedSubmodule
+              matchedSubmodule,
+              staged
             )
             // Why: a moved gitlink (clean worktree) keeps inner changes in
             // committed history, so diff the two commits; otherwise read the

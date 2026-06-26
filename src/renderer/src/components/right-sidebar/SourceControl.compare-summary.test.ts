@@ -264,7 +264,7 @@ describe('SourceControl compare summary', () => {
     ).toBe('origin/feature')
   })
 
-  it('returns null (working-tree only) when on and the branch has no upstream', () => {
+  it('falls back to the merge target when on and the branch has no upstream', () => {
     expect(
       resolveSourceControlCompareBaseRef({
         enabled: true,
@@ -273,12 +273,25 @@ describe('SourceControl compare summary', () => {
         upstreamName: null,
         fallbackBaseRef: 'origin/master'
       })
+    ).toBe('origin/master')
+  })
+
+  it('returns null only when no upstream or fallback base exists', () => {
+    expect(
+      resolveSourceControlCompareBaseRef({
+        enabled: true,
+        worktreeBaseRef: null,
+        repoBaseRef: null,
+        upstreamName: null,
+        fallbackBaseRef: null
+      })
     ).toBeNull()
   })
 
   it('keeps the branch compare while upstream status is still loading', () => {
     // remoteStatus undefined means upstream status has not loaded yet; the
-    // prefer-upstream setting makes compareBaseRef momentarily null in this gap.
+    // upstream policy can still make compareBaseRef momentarily null when no
+    // fallback base is available.
     expect(
       shouldClearBranchCompareForMissingBase({
         isFolder: false,

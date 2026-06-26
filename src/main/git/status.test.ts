@@ -778,6 +778,50 @@ describe('submodule diff routing', () => {
     expect(result.modifiedContent).toBe('v2\n')
   })
 
+  it('diffs staged inner files from parent HEAD to parent index', async () => {
+    gitExecFileAsyncMock.mockImplementation((args: string[], options?: { cwd?: string }) => {
+      if (args[0] === 'config' && args.includes('.gitmodules')) {
+        return Promise.resolve({
+          stdout: options?.cwd === PARENT ? 'submodule.flutter_mine.path flutter_mine\n' : ''
+        })
+      }
+      if (args[0] === 'ls-files') {
+        return Promise.resolve({ stdout: `160000 ${NEW_OID} 0\tflutter_mine\n` })
+      }
+      if (args[0] === 'ls-tree') {
+        return Promise.resolve({ stdout: `160000 commit ${OLD_OID}\tflutter_mine\n` })
+      }
+      if (args[0] === 'rev-parse') {
+        return Promise.resolve({ stdout: `${NEW_OID}\n` })
+      }
+      return Promise.resolve({ stdout: '' })
+    })
+    gitExecFileAsyncBufferMock.mockImplementation((args: string[]) => {
+      const spec = String(args.at(-1))
+      if (spec.startsWith(`${OLD_OID}:`)) {
+        return Promise.resolve({ stdout: Buffer.from('v1\n') })
+      }
+      if (spec.startsWith(`${NEW_OID}:`)) {
+        return Promise.resolve({ stdout: Buffer.from('v2\n') })
+      }
+      return Promise.resolve({ stdout: Buffer.from('') })
+    })
+
+    const result = await getDiff(PARENT, 'flutter_mine/lib/main.dart', true)
+
+    expect(gitExecFileAsyncBufferMock).toHaveBeenCalledWith(
+      ['show', '--end-of-options', `${OLD_OID}:lib/main.dart`],
+      { cwd: SUBMODULE, maxBuffer: 10 * 1024 * 1024 }
+    )
+    expect(gitExecFileAsyncBufferMock).toHaveBeenCalledWith(
+      ['show', '--end-of-options', `${NEW_OID}:lib/main.dart`],
+      { cwd: SUBMODULE, maxBuffer: 10 * 1024 * 1024 }
+    )
+    expect(result.kind).toBe('text')
+    expect(result.originalContent).toBe('v1\n')
+    expect(result.modifiedContent).toBe('v2\n')
+  })
+
   it('reads inner files from the working tree when the commit is unchanged', async () => {
     // Override the gitlink oids so recorded == checked-out (no pointer move),
     // routing the inner diff back to the index/working-tree blob read.
@@ -903,6 +947,36 @@ describe('getSubmoduleStatus', () => {
     })
 
     const result = await getSubmoduleStatus('/repo', 'flutter_mine')
+
+    expect(result.entries).toContainEqual(
+      expect.objectContaining({ path: 'lib/main.dart', status: 'modified', area: 'unstaged' })
+    )
+  })
+
+  it('includes staged commit-range entries from parent HEAD to parent index', async () => {
+    const OLD_OID = 'a'.repeat(40)
+    const NEW_OID = 'b'.repeat(40)
+    readFileMock.mockResolvedValue('gitdir: /repo/flutter_mine/.git\n')
+    existsSyncMock.mockReturnValue(false)
+    gitExecFileAsyncMock.mockReset()
+    gitExecFileAsyncMock.mockImplementation((args: string[]) => {
+      // Clean submodule worktree: the staged parent gitlink still has files to show.
+      if (args.includes('--name-status')) {
+        return Promise.resolve({ stdout: 'M\tlib/main.dart\n' })
+      }
+      if (args[0] === 'ls-files') {
+        return Promise.resolve({ stdout: `160000 ${NEW_OID} 0\tflutter_mine\n` })
+      }
+      if (args[0] === 'ls-tree') {
+        return Promise.resolve({ stdout: `160000 commit ${OLD_OID}\tflutter_mine\n` })
+      }
+      if (args[0] === 'rev-parse') {
+        return Promise.resolve({ stdout: `${NEW_OID}\n` })
+      }
+      return Promise.resolve({ stdout: '' })
+    })
+
+    const result = await getSubmoduleStatus('/repo', 'flutter_mine', { staged: true })
 
     expect(result.entries).toContainEqual(
       expect.objectContaining({ path: 'lib/main.dart', status: 'modified', area: 'unstaged' })

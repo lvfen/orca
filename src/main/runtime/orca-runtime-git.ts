@@ -7,6 +7,7 @@ import type {
   GitForkSyncExpectedUpstream,
   GitForkSyncResult,
   GitPushTarget,
+  GitStagingArea,
   GitStatusResult,
   GitUpstreamStatus,
   GitWorktreeInfo,
@@ -186,7 +187,8 @@ export class RuntimeGitCommands {
 
   async getRuntimeGitSubmoduleStatus(
     worktreeSelector: string,
-    submodulePath: string
+    submodulePath: string,
+    area: GitStagingArea = 'unstaged'
   ): Promise<GitStatusResult> {
     const target = await this.host.resolveRuntimeGitTarget(worktreeSelector)
     const provider = target.connectionId ? getSshGitProvider(target.connectionId) : null
@@ -194,13 +196,12 @@ export class RuntimeGitCommands {
       if (!provider) {
         throw new Error(SSH_GIT_PROVIDER_UNAVAILABLE_MESSAGE)
       }
-      return provider.getSubmoduleStatus(target.worktree.path, submodulePath)
+      return provider.getSubmoduleStatus(target.worktree.path, submodulePath, area)
     }
-    return getGitSubmoduleStatus(
-      target.worktree.path,
-      submodulePath,
-      localGitOptionsForTarget(target)
-    )
+    return getGitSubmoduleStatus(target.worktree.path, submodulePath, {
+      ...localGitOptionsForTarget(target),
+      ...(area === 'staged' ? { staged: true } : {})
+    })
   }
 
   async checkRuntimeGitIgnoredPaths(

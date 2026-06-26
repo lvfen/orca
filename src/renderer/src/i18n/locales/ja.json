@@ -5132,8 +5132,10 @@
           "changesFirst": "変更を先頭",
           "stagedFirst": "ステージ済みを先頭",
           "untrackedFirst": "未追跡を先頭",
-          "compareAgainstUpstreamTitle": "現在のブランチと比較",
-          "compareAgainstUpstreamDescription": "ソース管理の比較基準を既定で現在のブランチの上流に設定し、リポジトリの既定ブランチではなくローカルの変更を優先表示します。比較ビューのみに影響し、Pull Request やリベース先には影響しません。"
+          "compareAgainstUpstreamTitle": "既定の比較ベース",
+          "compareAgainstUpstreamDescription": "ソース管理がコミット済み変更の比較に既定で使うベースを選択します。ブランチの上流は現在のブランチに自動的に追従し、上流がない場合はリポジトリの既定ブランチにフォールバックします。比較ベースは各 worktree の Git パネルから worktree ごとに変更できます。Pull Request やリベースの対象は変更されません。",
+          "compareBaseRepositoryDefault": "リポジトリ既定",
+          "compareBaseBranchUpstream": "ブランチの上流"
         },
         "HiddenExperimentalGroup": {
           "d0f914a528": "プレースホルダーの切り替え",
@@ -7255,14 +7257,18 @@
             "untrackedFirst": "未追跡を先頭",
             "sourceControl": "ソース管理",
             "gitChanges": "git の変更",
-            "compareAgainstUpstreamTitle": "現在のブランチと比較",
-            "compareAgainstUpstreamDescription": "ソース管理の比較基準を既定で現在のブランチの上流に設定し、リポジトリの既定ブランチではなくローカルの変更を優先表示します。比較ビューのみに影響し、Pull Request やリベース先には影響しません。",
+            "compareAgainstUpstreamTitle": "既定の比較ベース",
+            "compareAgainstUpstreamDescription": "ソース管理がコミット済み変更の比較に既定で使うベースを選択します。ブランチの上流は現在のブランチに自動的に追従し、上流がない場合はリポジトリの既定ブランチにフォールバックします。比較ベースは各 worktree の Git パネルから worktree ごとに変更できます。Pull Request やリベースの対象は変更されません。",
             "compareBase": "比較基準",
             "currentBranch": "現在のブランチ",
             "upstream": "上流",
             "localChanges": "ローカルの変更",
             "originMaster": "origin/master",
-            "committedChanges": "コミット済みの変更"
+            "committedChanges": "コミット済みの変更",
+            "defaultCompareBase": "既定の比較ベース",
+            "defaultBranch": "既定ブランチ",
+            "repositoryDefault": "リポジトリ既定",
+            "branchUpstream": "ブランチ上流"
           }
         },
         "input": {

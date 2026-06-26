@@ -1,11 +1,17 @@
 import type { GlobalSettings } from '../../../../shared/types'
-import { Label } from '../ui/label'
 import { translate } from '@/i18n/i18n'
 import { SearchableSetting } from './SearchableSetting'
+import { SettingsRow, SettingsSegmentedControl } from './SettingsFormControls'
 import { matchesSettingsSearch } from './settings-search'
+
+type SourceControlCompareBasePolicy = 'repository-default' | 'branch-upstream'
 
 export const COMPARE_AGAINST_UPSTREAM_KEYWORDS = [
   'compare base',
+  'default compare base',
+  'default branch',
+  'repository default',
+  'branch upstream',
   'current branch',
   'upstream',
   'local changes',
@@ -18,14 +24,14 @@ export const COMPARE_AGAINST_UPSTREAM_KEYWORDS = [
 function getCompareAgainstUpstreamTitle(): string {
   return translate(
     'auto.components.settings.GitPane.compareAgainstUpstreamTitle',
-    'Compare Against Current Branch'
+    'Default Compare Base'
   )
 }
 
 function getCompareAgainstUpstreamDescription(): string {
   return translate(
     'auto.components.settings.GitPane.compareAgainstUpstreamDescription',
-    "Default the Source Control compare base to the current branch's upstream so it prioritizes local changes, instead of the repository default branch. Only affects the compare view, not the Pull Request or rebase target."
+    "Choose which base Source Control uses by default for committed-change comparisons. Branch upstream follows the current branch automatically and falls back to the repository default branch when no upstream exists. You can still change the compare base per worktree from that worktree's Git panel. Pull Request and rebase targets don't change."
   )
 }
 
@@ -46,37 +52,52 @@ export function CompareAgainstUpstreamSetting({
 }): React.JSX.Element {
   const title = getCompareAgainstUpstreamTitle()
   const description = getCompareAgainstUpstreamDescription()
+  const value: SourceControlCompareBasePolicy = settings.sourceControlCompareAgainstUpstream
+    ? 'branch-upstream'
+    : 'repository-default'
 
   return (
     <SearchableSetting
       title={title}
       description={description}
       keywords={COMPARE_AGAINST_UPSTREAM_KEYWORDS}
-      className="flex items-center justify-between gap-4 py-2"
+      className="max-w-none"
     >
-      <div className="space-y-0.5">
-        <Label>{title}</Label>
-        <p className="text-xs text-muted-foreground">{description}</p>
-      </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={settings.sourceControlCompareAgainstUpstream}
-        onClick={() =>
-          updateSettings({
-            sourceControlCompareAgainstUpstream: !settings.sourceControlCompareAgainstUpstream
-          })
+      <SettingsRow
+        label={title}
+        description={description}
+        alignTop
+        control={
+          <SettingsSegmentedControl<SourceControlCompareBasePolicy>
+            value={value}
+            onChange={(nextValue) => {
+              if (nextValue !== value) {
+                void updateSettings({
+                  sourceControlCompareAgainstUpstream: nextValue === 'branch-upstream'
+                })
+              }
+            }}
+            ariaLabel={title}
+            size="sm"
+            options={[
+              {
+                value: 'repository-default',
+                label: translate(
+                  'auto.components.settings.GitPane.compareBaseRepositoryDefault',
+                  'Repository default'
+                )
+              },
+              {
+                value: 'branch-upstream',
+                label: translate(
+                  'auto.components.settings.GitPane.compareBaseBranchUpstream',
+                  'Branch upstream'
+                )
+              }
+            ]}
+          />
         }
-        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors ${
-          settings.sourceControlCompareAgainstUpstream ? 'bg-foreground' : 'bg-muted-foreground/30'
-        }`}
-      >
-        <span
-          className={`pointer-events-none block size-3.5 rounded-full bg-background shadow-sm transition-transform ${
-            settings.sourceControlCompareAgainstUpstream ? 'translate-x-4' : 'translate-x-0.5'
-          }`}
-        />
-      </button>
+      />
     </SearchableSetting>
   )
 }

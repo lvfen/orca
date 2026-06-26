@@ -5095,8 +5095,10 @@
           "changesFirst": "更改优先",
           "stagedFirst": "已暂存优先",
           "untrackedFirst": "未跟踪优先",
-          "compareAgainstUpstreamTitle": "对比当前分支",
-          "compareAgainstUpstreamDescription": "将源代码管理的对比基准默认设为当前分支的上游，从而优先显示本地变更，而不是仓库的默认分支。仅影响对比视图，不影响 Pull Request 或变基目标。"
+          "compareAgainstUpstreamTitle": "默认对比基准",
+          "compareAgainstUpstreamDescription": "选择源代码管理在比较已提交变更时默认使用的基准。分支上游会自动跟随当前分支；如果没有上游，则回退到仓库默认分支。你仍然可以在对应 worktree 的 Git 面板中按 worktree 更改对比基准。Pull Request 和变基目标不会改变。",
+          "compareBaseRepositoryDefault": "仓库默认",
+          "compareBaseBranchUpstream": "分支上游"
         },
         "HiddenExperimentalGroup": {
           "d0f914a528": "占位符切换",
@@ -7218,14 +7220,18 @@
             "untrackedFirst": "未跟踪优先",
             "sourceControl": "源代码管理",
             "gitChanges": "git 更改",
-            "compareAgainstUpstreamTitle": "对比当前分支",
-            "compareAgainstUpstreamDescription": "将源代码管理的对比基准默认设为当前分支的上游，从而优先显示本地变更，而不是仓库的默认分支。仅影响对比视图，不影响 Pull Request 或变基目标。",
+            "compareAgainstUpstreamTitle": "默认对比基准",
+            "compareAgainstUpstreamDescription": "选择源代码管理在比较已提交变更时默认使用的基准。分支上游会自动跟随当前分支；如果没有上游，则回退到仓库默认分支。你仍然可以在对应 worktree 的 Git 面板中按 worktree 更改对比基准。Pull Request 和变基目标不会改变。",
             "compareBase": "对比基准",
             "currentBranch": "当前分支",
             "upstream": "上游",
             "localChanges": "本地变更",
             "originMaster": "origin/master",
-            "committedChanges": "已提交的更改"
+            "committedChanges": "已提交的更改",
+            "defaultCompareBase": "默认对比基准",
+            "defaultBranch": "默认分支",
+            "repositoryDefault": "仓库默认",
+            "branchUpstream": "分支上游"
           }
         },
         "input": {

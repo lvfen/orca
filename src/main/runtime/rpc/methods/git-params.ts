@@ -26,7 +26,10 @@ export const GitSubmoduleStatus = WorktreeSelector.extend({
         .min(1, 'Missing submodule path')
         // Why: never let a submodule path be parsed as a git flag (arg injection).
         .refine((value) => !value.startsWith('-'), 'Submodule path must not start with -')
-    )
+    ),
+  // Why: submodule expansion is requested from a Source Control row; the row
+  // area determines whether the gitlink range is HEAD->index or index->worktree.
+  area: z.enum(['staged', 'unstaged', 'untracked']).optional()
 })
 
 export const GitFilePath = WorktreeSelector.extend({

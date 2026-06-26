@@ -5147,8 +5147,10 @@
           "changesFirst": "Changes first",
           "stagedFirst": "Staged first",
           "untrackedFirst": "Untracked first",
-          "compareAgainstUpstreamTitle": "Compare Against Current Branch",
-          "compareAgainstUpstreamDescription": "Default the Source Control compare base to the current branch's upstream so it prioritizes local changes, instead of the repository default branch. Only affects the compare view, not the Pull Request or rebase target."
+          "compareAgainstUpstreamTitle": "Default Compare Base",
+          "compareAgainstUpstreamDescription": "Choose which base Source Control uses by default for committed-change comparisons. Branch upstream follows the current branch automatically and falls back to the repository default branch when no upstream exists. You can still change the compare base per worktree from that worktree's Git panel. Pull Request and rebase targets don't change.",
+          "compareBaseRepositoryDefault": "Repository default",
+          "compareBaseBranchUpstream": "Branch upstream"
         },
         "HiddenExperimentalGroup": {
           "d0f914a528": "Placeholder toggle",
@@ -7270,9 +7272,13 @@
             "untrackedFirst": "untracked first",
             "sourceControl": "source control",
             "gitChanges": "git changes",
-            "compareAgainstUpstreamTitle": "Compare Against Current Branch",
-            "compareAgainstUpstreamDescription": "Default the Source Control compare base to the current branch's upstream so it prioritizes local changes, instead of the repository default branch. Only affects the compare view, not the Pull Request or rebase target.",
+            "compareAgainstUpstreamTitle": "Default Compare Base",
+            "compareAgainstUpstreamDescription": "Choose which base Source Control uses by default for committed-change comparisons. Branch upstream follows the current branch automatically and falls back to the repository default branch when no upstream exists. You can still change the compare base per worktree from that worktree's Git panel. Pull Request and rebase targets don't change.",
             "compareBase": "compare base",
+            "defaultCompareBase": "default compare base",
+            "defaultBranch": "default branch",
+            "repositoryDefault": "repository default",
+            "branchUpstream": "branch upstream",
             "currentBranch": "current branch",
             "upstream": "upstream",
             "localChanges": "local changes",

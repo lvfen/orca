@@ -57,15 +57,19 @@ function findSegmentedControl(node: unknown): ReactElementLike {
   return found
 }
 
-function findCompareAgainstUpstreamSwitch(node: unknown): ReactElementLike {
+function findCompareBaseSegmentedControl(node: unknown): ReactElementLike {
   let found: ReactElementLike | null = null
+  const label = translate(
+    'auto.components.settings.GitPane.compareAgainstUpstreamTitle',
+    'Default Compare Base'
+  )
   visit(node, (entry) => {
-    if (entry.type === 'button' && entry.props.role === 'switch') {
+    if (entry.type === SettingsSegmentedControl && entry.props.ariaLabel === label) {
       found = entry
     }
   })
   if (!found) {
-    throw new Error('compare-against-upstream switch not found')
+    throw new Error('compare-base segmented control not found')
   }
   return found
 }
@@ -178,26 +182,40 @@ describe('GitPane', () => {
     expect(matchesSettingsSearch('group order', getGitPaneSearchEntries())).toBe(true)
   })
 
-  it('renders the compare-against-current-branch setting in Git settings', () => {
+  it('renders the default compare base setting in Git settings', () => {
     const markup = renderGitPane('compare base')
 
     expect(markup).toContain(
       translate(
         'auto.components.settings.GitPane.compareAgainstUpstreamTitle',
-        'Compare Against Current Branch'
+        'Default Compare Base'
       )
     )
+    expect(markup).toContain(
+      translate(
+        'auto.components.settings.GitPane.compareBaseRepositoryDefault',
+        'Repository default'
+      )
+    )
+    expect(markup).toContain(
+      translate('auto.components.settings.GitPane.compareBaseBranchUpstream', 'Branch upstream')
+    )
+    expect(markup).toContain('worktree&#x27;s Git panel')
   })
 
-  it('includes compare-against-current-branch search metadata', () => {
+  it('includes default compare base search metadata', () => {
     expect(matchesSettingsSearch('compare base', getGitPaneSearchEntries())).toBe(true)
+    expect(matchesSettingsSearch('worktree', getGitPaneSearchEntries())).toBe(true)
+    expect(matchesSettingsSearch('Git panel', getGitPaneSearchEntries())).toBe(true)
+    expect(matchesSettingsSearch('default branch', getGitPaneSearchEntries())).toBe(true)
+    expect(matchesSettingsSearch('branch upstream', getGitPaneSearchEntries())).toBe(true)
     expect(matchesSettingsSearch('upstream', getGitPaneSearchEntries())).toBe(true)
     expect(matchesSettingsSearch('diff base', getGitPaneSearchEntries())).toBe(true)
     expect(matchesSettingsSearch('source control', getGitPaneSearchEntries())).toBe(true)
   })
 
-  it('reflects the compare-against-current-branch setting state in its own switch', () => {
-    const offSwitch = findCompareAgainstUpstreamSwitch(
+  it('reflects the default compare base policy in its own segmented control', () => {
+    const repositoryDefaultControl = findCompareBaseSegmentedControl(
       CompareAgainstUpstreamSetting({
         settings: {
           ...getDefaultSettings(os.homedir()),
@@ -206,9 +224,9 @@ describe('GitPane', () => {
         updateSettings: () => {}
       })
     )
-    expect(offSwitch.props['aria-checked']).toBe(false)
+    expect(repositoryDefaultControl.props.value).toBe('repository-default')
 
-    const onSwitch = findCompareAgainstUpstreamSwitch(
+    const branchUpstreamControl = findCompareBaseSegmentedControl(
       CompareAgainstUpstreamSetting({
         settings: {
           ...getDefaultSettings(os.homedir()),
@@ -217,14 +235,12 @@ describe('GitPane', () => {
         updateSettings: () => {}
       })
     )
-    expect(onSwitch.props['aria-checked']).toBe(true)
-    // Why: the switch must not default to type="submit" inside a form.
-    expect(onSwitch.props.type).toBe('button')
+    expect(branchUpstreamControl.props.value).toBe('branch-upstream')
   })
 
-  it('toggles the compare-against-current-branch setting to its negated value on click', () => {
+  it('updates the default compare base policy from its segmented control', () => {
     const updateSettings = vi.fn()
-    const offSwitch = findCompareAgainstUpstreamSwitch(
+    const repositoryDefaultControl = findCompareBaseSegmentedControl(
       CompareAgainstUpstreamSetting({
         settings: {
           ...getDefaultSettings(os.homedir()),
@@ -233,11 +249,11 @@ describe('GitPane', () => {
         updateSettings
       })
     )
-    ;(offSwitch.props.onClick as () => void)()
+    ;(repositoryDefaultControl.props.onChange as (value: string) => void)('branch-upstream')
     expect(updateSettings).toHaveBeenCalledWith({ sourceControlCompareAgainstUpstream: true })
 
     updateSettings.mockClear()
-    const onSwitch = findCompareAgainstUpstreamSwitch(
+    const branchUpstreamControl = findCompareBaseSegmentedControl(
       CompareAgainstUpstreamSetting({
         settings: {
           ...getDefaultSettings(os.homedir()),
@@ -246,7 +262,7 @@ describe('GitPane', () => {
         updateSettings
       })
     )
-    ;(onSwitch.props.onClick as () => void)()
+    ;(branchUpstreamControl.props.onChange as (value: string) => void)('repository-default')
     expect(updateSettings).toHaveBeenCalledWith({ sourceControlCompareAgainstUpstream: false })
   })
 })

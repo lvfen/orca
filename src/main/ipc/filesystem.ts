@@ -16,6 +16,7 @@ import type {
   GitForkSyncExpectedUpstream,
   GitForkSyncResult,
   GlobalSettings,
+  GitStagingArea,
   GitPushTarget,
   GitUpstreamStatus,
   GitStatusResult,
@@ -867,14 +868,19 @@ export function registerFilesystemHandlers(
     'git:submoduleStatus',
     async (
       _event,
-      args: { worktreePath: string; submodulePath: string; connectionId?: string }
+      args: {
+        worktreePath: string
+        submodulePath: string
+        connectionId?: string
+        area?: GitStagingArea
+      }
     ): Promise<GitStatusResult> => {
       if (args.connectionId) {
         const provider = getSshGitProvider(args.connectionId)
         if (!provider) {
           throw new Error(SSH_GIT_PROVIDER_UNAVAILABLE_MESSAGE)
         }
-        return provider.getSubmoduleStatus(args.worktreePath, args.submodulePath)
+        return provider.getSubmoduleStatus(args.worktreePath, args.submodulePath, args.area)
       }
       const worktreePath = await resolveRegisteredWorktreePath(args.worktreePath, store)
       const gitOptions = getLocalGitOptionsForRegisteredWorktree(
@@ -882,7 +888,10 @@ export function registerFilesystemHandlers(
         args.worktreePath,
         worktreePath
       )
-      return getSubmoduleStatus(worktreePath, args.submodulePath, gitOptions)
+      return getSubmoduleStatus(worktreePath, args.submodulePath, {
+        ...gitOptions,
+        ...(args.area === 'staged' ? { staged: true } : {})
+      })
     }
   )
 

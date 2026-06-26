@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { GitStatusEntry } from '../../../../shared/types'
 import { getConnectionId } from '@/lib/connection-context'
 import { getRuntimeGitSubmoduleStatus, type RuntimeGitContext } from '@/runtime/runtime-git-client'
-import type { SubmoduleStatusState } from './source-control-submodule-expansion'
+import {
+  getSubmoduleExpansionKey,
+  isExpandableSubmoduleEntry,
+  parseSubmoduleExpansionKey,
+  type SubmoduleStatusState
+} from './source-control-submodule-expansion'
 
 export type UseSourceControlSubmoduleStatusInput = {
   activeWorktreeId: string | null | undefined
@@ -14,9 +19,9 @@ export type UseSourceControlSubmoduleStatusInput = {
 }
 
 export type UseSourceControlSubmoduleStatusResult = {
-  expandedSubmodulePaths: Set<string>
-  submoduleStatusByPath: Record<string, SubmoduleStatusState>
-  toggleSubmodule: (submodulePath: string) => void
+  expandedSubmoduleKeys: Set<string>
+  submoduleStatusByKey: Record<string, SubmoduleStatusState>
+  toggleSubmodule: (entry: Pick<GitStatusEntry, 'area' | 'path'>) => void
 }
 
 /**
@@ -30,8 +35,8 @@ export function useSourceControlSubmoduleStatus(
   input: UseSourceControlSubmoduleStatusInput
 ): UseSourceControlSubmoduleStatusResult {
   const { activeWorktreeId, worktreePath, activeRepoSettings, entries } = input
-  const [expandedSubmodulePaths, setExpandedSubmodulePaths] = useState<Set<string>>(() => new Set())
-  const [submoduleStatusByPath, setSubmoduleStatusByPath] = useState<
+  const [expandedSubmoduleKeys, setExpandedSubmoduleKeys] = useState<Set<string>>(() => new Set())
+  const [submoduleStatusByKey, setSubmoduleStatusByKey] = useState<
     Record<string, SubmoduleStatusState>
   >({})
 
@@ -43,20 +48,25 @@ export function useSourceControlSubmoduleStatus(
 
   useEffect(() => {
     generationRef.current += 1
-    setExpandedSubmodulePaths(new Set())
-    setSubmoduleStatusByPath({})
+    setExpandedSubmoduleKeys(new Set())
+    setSubmoduleStatusByKey({})
   }, [activeWorktreeId, worktreePath])
 
   const fetchSubmoduleStatus = useCallback(
-    async (submodulePath: string): Promise<void> => {
+    async (expansionKey: string): Promise<void> => {
       if (!worktreePath) {
         return
       }
+      const parsed = parseSubmoduleExpansionKey(expansionKey)
+      if (!parsed) {
+        return
+      }
+      const { area, path: submodulePath } = parsed
       const generation = generationRef.current
       // Why: keep any already-loaded children visible during a poll-driven
       // refetch so expanding then refreshing doesn't flash a loading row.
-      setSubmoduleStatusByPath((prev) =>
-        prev[submodulePath] ? prev : { ...prev, [submodulePath]: { status: 'loading' } }
+      setSubmoduleStatusByKey((prev) =>
+        prev[expansionKey] ? prev : { ...prev, [expansionKey]: { status: 'loading' } }
       )
       try {
         const connectionId = getConnectionId(activeWorktreeId ?? null) ?? undefined
@@ -68,22 +78,23 @@ export function useSourceControlSubmoduleStatus(
             worktreePath,
             connectionId
           },
-          submodulePath
+          submodulePath,
+          area
         )
         if (generationRef.current !== generation) {
           return
         }
-        setSubmoduleStatusByPath((prev) => ({
+        setSubmoduleStatusByKey((prev) => ({
           ...prev,
-          [submodulePath]: { status: 'loaded', entries: result.entries }
+          [expansionKey]: { status: 'loaded', entries: result.entries }
         }))
       } catch (error) {
         if (generationRef.current !== generation) {
           return
         }
-        setSubmoduleStatusByPath((prev) => ({
+        setSubmoduleStatusByKey((prev) => ({
           ...prev,
-          [submodulePath]: {
+          [expansionKey]: {
             status: 'error',
             error: error instanceof Error ? error.message : String(error)
           }
@@ -93,13 +104,14 @@ export function useSourceControlSubmoduleStatus(
     [activeRepoSettings, activeWorktreeId, worktreePath]
   )
 
-  const toggleSubmodule = useCallback((submodulePath: string) => {
-    setExpandedSubmodulePaths((prev) => {
+  const toggleSubmodule = useCallback((entry: Pick<GitStatusEntry, 'area' | 'path'>) => {
+    const expansionKey = getSubmoduleExpansionKey(entry)
+    setExpandedSubmoduleKeys((prev) => {
       const next = new Set(prev)
-      if (next.has(submodulePath)) {
-        next.delete(submodulePath)
+      if (next.has(expansionKey)) {
+        next.delete(expansionKey)
       } else {
-        next.add(submodulePath)
+        next.add(expansionKey)
       }
       return next
     })
@@ -109,10 +121,15 @@ export function useSourceControlSubmoduleStatus(
   // when the parent status poll refreshes `entries` so expanded children stay
   // fresh, while collapsed submodules never trigger any extra git work.
   useEffect(() => {
-    for (const submodulePath of expandedSubmodulePaths) {
-      void fetchSubmoduleStatus(submodulePath)
+    const visibleExpandableKeys = new Set(
+      entries.filter(isExpandableSubmoduleEntry).map(getSubmoduleExpansionKey)
+    )
+    for (const expansionKey of expandedSubmoduleKeys) {
+      if (visibleExpandableKeys.has(expansionKey)) {
+        void fetchSubmoduleStatus(expansionKey)
+      }
     }
-  }, [expandedSubmodulePaths, entries, fetchSubmoduleStatus])
+  }, [expandedSubmoduleKeys, entries, fetchSubmoduleStatus])
 
-  return { expandedSubmodulePaths, submoduleStatusByPath, toggleSubmodule }
+  return { expandedSubmoduleKeys, submoduleStatusByKey, toggleSubmodule }
 }
