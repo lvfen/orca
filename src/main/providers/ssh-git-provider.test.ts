@@ -976,6 +976,31 @@ describe('SshGitProvider', () => {
     expect(mux.request).toHaveBeenCalledTimes(3)
   })
 
+  it('clears pending diff RPCs when submodule status runs', async () => {
+    const diff = {
+      kind: 'text',
+      originalContent: 'old',
+      modifiedContent: 'new',
+      originalIsBinary: false,
+      modifiedIsBinary: false
+    }
+    const pendingDiff = deferredValue(diff)
+    mux.request.mockReturnValueOnce(pendingDiff.promise)
+
+    const first = provider.getDiff('/home/user/repo', 'src/file.ts', false, true)
+    await waitForRequestCount(mux.request, 1)
+
+    mux.request.mockResolvedValueOnce({ entries: [], conflictOperation: 'unknown' })
+    await provider.getSubmoduleStatus('/home/user/repo', 'vendor/lib')
+
+    mux.request.mockResolvedValueOnce(diff)
+    const second = provider.getDiff('/home/user/repo', 'src/file.ts', false, true)
+
+    pendingDiff.resolve()
+    await expect(Promise.all([first, second])).resolves.toEqual([diff, diff])
+    expect(mux.request).toHaveBeenCalledTimes(3)
+  })
+
   it('clears pending diff RPCs when a mutation runs', async () => {
     const diff = {
       kind: 'text',

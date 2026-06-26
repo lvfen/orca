@@ -90,6 +90,7 @@ import {
   type SourceControlTreeNode
 } from './source-control-tree'
 import {
+  collectListSelectionEntries,
   injectExpandedSubmoduleEntries,
   injectExpandedSubmoduleRows,
   isExpandableSubmoduleEntry,
@@ -1660,18 +1661,6 @@ function SourceControlInner(): React.JSX.Element {
     [branchEntries, fileFilterState]
   )
 
-  const flatEntries = useMemo(() => {
-    const arr: FlatEntry[] = []
-    for (const section of displaySections) {
-      if (!collapsedSections.has(section.id)) {
-        for (const entry of section.items) {
-          arr.push({ key: `${entry.area}::${entry.path}`, entry, area: entry.area })
-        }
-      }
-    }
-    return arr
-  }, [collapsedSections, displaySections])
-
   const treeRootsBySection = useMemo(() => {
     const roots: Partial<Record<SourceControlDisplaySectionId, GitStatusSourceControlTreeNode[]>> =
       {}
@@ -1737,11 +1726,20 @@ function SourceControlInner(): React.JSX.Element {
   )
 
   const visibleSelectionEntries = useMemo(() => {
+    const arr: FlatEntry[] = []
+    // Why: list view splices lazily-loaded submodule child rows into the
+    // rendered list, so selection/range/open-key bookkeeping must read the same
+    // injected rows instead of the pre-injection flat entries.
     if (sourceControlViewMode === 'list') {
-      return flatEntries
+      for (const section of displaySections) {
+        if (collapsedSections.has(section.id)) {
+          continue
+        }
+        arr.push(...collectListSelectionEntries(visibleListRowsBySection[section.id] ?? []))
+      }
+      return arr
     }
 
-    const arr: FlatEntry[] = []
     for (const section of displaySections) {
       if (collapsedSections.has(section.id)) {
         continue
@@ -1756,8 +1754,8 @@ function SourceControlInner(): React.JSX.Element {
   }, [
     collapsedSections,
     displaySections,
-    flatEntries,
     sourceControlViewMode,
+    visibleListRowsBySection,
     visibleTreeRowsBySection
   ])
 
@@ -4775,8 +4773,10 @@ function SourceControlInner(): React.JSX.Element {
     }
     void refreshGitHistoryRef.current()
   }, [
+    // Why: history is fetched with compareBaseRef, so re-run when the upstream
+    // compare base changes — effectiveBaseRef can stay put while it moves.
     activeWorktreeId,
-    effectiveBaseRef,
+    compareBaseRef,
     isBranchVisible,
     isFolder,
     isGitHistoryExpanded,

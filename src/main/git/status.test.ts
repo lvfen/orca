@@ -809,6 +809,34 @@ describe('submodule diff routing', () => {
     expect(result.originalContent).toBe('old\n')
     expect(result.modifiedContent).toBe('new')
   })
+
+  it('rejects inner submodule diffs whose .gitmodules path escapes the worktree', async () => {
+    // A crafted .gitmodules path must not let the inner diff read escape the
+    // selected worktree; loadDiff routes through resolveSubmoduleWorktreePath.
+    gitExecFileAsyncMock.mockImplementation((args: string[], options?: { cwd?: string }) => {
+      if (args[0] === 'config' && args.includes('.gitmodules')) {
+        return Promise.resolve({
+          stdout: options?.cwd === PARENT ? 'submodule.evil.path ../evil\n' : ''
+        })
+      }
+      return Promise.resolve({ stdout: '' })
+    })
+
+    await expect(getDiff(PARENT, '../evil/secret.txt', false)).rejects.toThrow('Access denied')
+  })
+
+  it('rejects gitlink pointer diffs whose .gitmodules path escapes the worktree', async () => {
+    gitExecFileAsyncMock.mockImplementation((args: string[], options?: { cwd?: string }) => {
+      if (args[0] === 'config' && args.includes('.gitmodules')) {
+        return Promise.resolve({
+          stdout: options?.cwd === PARENT ? 'submodule.evil.path ../evil\n' : ''
+        })
+      }
+      return Promise.resolve({ stdout: '' })
+    })
+
+    await expect(getDiff(PARENT, '../evil', false)).rejects.toThrow('Access denied')
+  })
 })
 
 describe('resolveSubmoduleWorktreePath', () => {
@@ -962,6 +990,36 @@ describe('getStatus', () => {
     await vi.waitFor(() => expect(statusCommandCalls).toBe(2))
     releaseStatusReads.splice(0).forEach((release) => release())
     await settledRead
+    expect(statusCommandCalls).toBe(2)
+  })
+
+  it('clears in-flight status reads when a mutation runs', async () => {
+    readFileMock.mockResolvedValue('gitdir: /repo/.git/worktrees/feature\n')
+    existsSyncMock.mockReturnValue(false)
+    let statusCommandCalls = 0
+    const releaseStatusReads: (() => void)[] = []
+    gitExecFileAsyncMock.mockImplementation((args: string[]) => {
+      if (args.includes('status')) {
+        statusCommandCalls += 1
+        return new Promise<{ stdout: string }>((resolve) => {
+          releaseStatusReads.push(() => resolve({ stdout: '' }))
+        })
+      }
+      return Promise.resolve({ stdout: '' })
+    })
+
+    const first = getStatus('/repo')
+    await vi.waitFor(() => expect(statusCommandCalls).toBe(1))
+
+    // A mutation must invalidate the in-flight status read so the next getStatus
+    // starts fresh instead of joining a pre-mutation promise and going stale.
+    await stageFile('/repo', 'src/file.ts')
+
+    const second = getStatus('/repo')
+    await vi.waitFor(() => expect(statusCommandCalls).toBe(2))
+
+    releaseStatusReads.splice(0).forEach((release) => release())
+    await Promise.all([first, second])
     expect(statusCommandCalls).toBe(2)
   })
 

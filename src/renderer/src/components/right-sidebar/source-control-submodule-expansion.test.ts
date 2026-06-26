@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { GitStatusEntry } from '../../../../shared/types'
 import {
   buildSubmoduleChildNodes,
+  collectListSelectionEntries,
   injectExpandedSubmoduleEntries,
   injectExpandedSubmoduleRows,
   isExpandableSubmoduleEntry,
@@ -291,5 +292,58 @@ describe('injectExpandedSubmoduleEntries (list view)', () => {
       state: 'empty',
       message: EMPTY
     })
+  })
+})
+
+describe('collectListSelectionEntries', () => {
+  it('includes injected submodule child entries and skips placeholders', () => {
+    const entry = submoduleEntry({
+      path: 'flutter_mine',
+      submodule: { commitChanged: true, trackedChanges: false, untrackedChanges: false }
+    })
+    const statuses: Record<string, SubmoduleStatusState> = {
+      flutter_mine: {
+        status: 'loaded',
+        entries: [{ path: 'lib/main.dart', status: 'modified', area: 'unstaged' }]
+      }
+    }
+    const rows = injectExpandedSubmoduleEntries(
+      [entry],
+      new Set(['flutter_mine']),
+      statuses,
+      LOADING,
+      EMPTY
+    )
+
+    // The expanded submodule's child file must be selectable, mirroring the rows
+    // that actually render in list view.
+    expect(collectListSelectionEntries(rows)).toEqual([
+      { key: 'unstaged::flutter_mine', entry, area: 'unstaged' },
+      {
+        key: 'unstaged::flutter_mine/lib/main.dart',
+        entry: {
+          path: 'flutter_mine/lib/main.dart',
+          status: 'modified',
+          area: 'unstaged',
+          submoduleRoot: 'flutter_mine'
+        },
+        area: 'unstaged'
+      }
+    ])
+  })
+
+  it('drops loading placeholders from selection entries', () => {
+    const entry = submoduleEntry({ path: 'flutter_mine' })
+    const rows = injectExpandedSubmoduleEntries(
+      [entry],
+      new Set(['flutter_mine']),
+      {},
+      LOADING,
+      EMPTY
+    )
+
+    expect(collectListSelectionEntries(rows)).toEqual([
+      { key: 'unstaged::flutter_mine', entry, area: 'unstaged' }
+    ])
   })
 })

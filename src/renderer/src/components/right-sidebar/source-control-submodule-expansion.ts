@@ -2,6 +2,7 @@ import type { GitStatusEntry } from '../../../../shared/types'
 import { basename } from '@/lib/path'
 import type { SourceControlSectionArea } from './source-control-section-order'
 import type { SourceControlTreeNode } from './source-control-tree'
+import type { FlatEntry } from './useSourceControlSelection'
 
 export type SubmoduleSectionTreeNode = SourceControlTreeNode<
   GitStatusEntry,
@@ -145,6 +146,28 @@ export function injectExpandedSubmoduleEntries(
     }
     for (const innerEntry of state.entries) {
       result.push({ type: 'entry', entry: buildSubmoduleChildEntry(submodulePath, innerEntry) })
+    }
+  }
+  return result
+}
+
+/**
+ * Map injected list rows to selection entries. List-view selection/range/open-key
+ * bookkeeping must read the same submodule-injected rows it renders; otherwise an
+ * expanded submodule's child files render with handlers but stay unselectable.
+ * Placeholders are skipped because they are not selectable.
+ */
+export function collectListSelectionEntries(
+  rows: readonly RenderableSubmoduleListItem[]
+): FlatEntry[] {
+  const result: FlatEntry[] = []
+  for (const row of rows) {
+    if (row.type === 'entry') {
+      result.push({
+        key: `${row.entry.area}::${row.entry.path}`,
+        entry: row.entry,
+        area: row.entry.area
+      })
     }
   }
   return result

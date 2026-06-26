@@ -111,6 +111,9 @@ export class SshGitProvider implements IGitProvider {
   }
 
   async getSubmoduleStatus(worktreePath: string, submodulePath: string): Promise<GitStatusResult> {
+    // Why: mirror getStatus() — refreshing submodule state must invalidate
+    // in-flight diff reads so a later diff can't reuse a stale pending RPC.
+    this.gitDiffReadDedupe.clear()
     try {
       return (await this.mux.request('git.submoduleStatus', {
         worktreePath,

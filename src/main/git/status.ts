@@ -72,6 +72,14 @@ const gitDiffReadDedupe = new InFlightPromiseDedupe<GitDiffResult>()
 const effectiveUpstreamStatusWriteGeneration = new Map<string, number>()
 const statusReadsInFlight = new Map<string, Promise<GitStatusResult>>()
 
+// Why: a mutation invalidates both in-flight diff reads and in-flight status
+// coalescing; clearing only the diff dedupe would let a post-mutation
+// getStatus() join a pre-mutation read and return stale entries.
+function clearGitReadInvalidationState(): void {
+  gitDiffReadDedupe.clear()
+  statusReadsInFlight.clear()
+}
+
 export function clearSubmodulePathsCacheForTests(): void {
   submodulePathsCache.clear()
 }
@@ -86,9 +94,8 @@ export function clearEffectiveUpstreamStatusCacheForTests(): void {
   effectiveUpstreamStatusCache.clear()
   effectiveUpstreamStatusInFlight.clear()
   retiredEffectiveUpstreamStatusInFlight.clear()
-  gitDiffReadDedupe.clear()
   effectiveUpstreamStatusWriteGeneration.clear()
-  statusReadsInFlight.clear()
+  clearGitReadInvalidationState()
 }
 
 export function getEffectiveUpstreamStatusCacheCountForTests(): number {
@@ -955,9 +962,11 @@ async function buildSubmodulePointerDiff(
   submodulePath: string,
   staged: boolean,
   compareAgainstHead: boolean,
-  options: GitRuntimeOptions
+  options: GitRuntimeOptions,
+  // Why: default to the validated resolver so every caller (not just loadDiff)
+  // is protected from a .gitmodules path escaping the parent worktree.
+  submoduleWorktreePath = resolveSubmoduleWorktreePath(worktreePath, submodulePath)
 ): Promise<GitDiffResult> {
-  const submoduleWorktreePath = path.join(worktreePath, submodulePath)
   let leftOid = ''
   let rightOid = ''
   if (staged) {
@@ -1056,6 +1065,10 @@ async function loadDiff(
   if (submodulePaths.length > 0) {
     const matchedSubmodule = findContainingSubmodule(submodulePaths, filePath)
     if (matchedSubmodule) {
+      // Why: matchedSubmodule originates from .gitmodules, so validate it against
+      // the worktree boundary before any inner read — a crafted submodule path
+      // must not let the diff escape the selected repo.
+      const submoduleWorktreePath = resolveSubmoduleWorktreePath(worktreePath, matchedSubmodule)
       const normalizedFilePath = filePath.replace(/\\/g, '/').replace(/\/+$/, '')
       if (normalizedFilePath === matchedSubmodule) {
         return buildSubmodulePointerDiff(
@@ -1063,11 +1076,11 @@ async function loadDiff(
           matchedSubmodule,
           staged,
           compareAgainstHead,
-          options
+          options,
+          submoduleWorktreePath
         )
       }
       const innerPath = normalizedFilePath.slice(matchedSubmodule.length + 1)
-      const submoduleWorktreePath = path.join(worktreePath, matchedSubmodule)
       const fromOid =
         (await readGitlinkOidFromIndex(worktreePath, matchedSubmodule, options)) ||
         (await readGitlinkOidFromTree(worktreePath, 'HEAD', matchedSubmodule, options))
@@ -1729,14 +1742,14 @@ export async function stageFile(
   filePath: string,
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   try {
     await gitExecFileAsync(
       ['add', '--', literalPathspec(filePath)],
       gitOptionsForWorktree(worktreePath, options)
     )
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -1748,13 +1761,13 @@ export async function unstageFile(
   filePath: string,
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   try {
     await gitExecFileAsync(['restore', '--staged', '--', literalPathspec(filePath)], {
       ...gitOptionsForWorktree(worktreePath, options)
     })
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -1811,7 +1824,7 @@ export async function commitChanges(
   message: string,
   options: GitRuntimeOptions = {}
 ): Promise<{ success: boolean; error?: string }> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   try {
     await gitExecFileAsync(['commit', '-m', message], gitOptionsForWorktree(worktreePath, options))
     return { success: true }
@@ -1834,7 +1847,7 @@ export async function commitChanges(
       (error instanceof Error ? error.message : 'Commit failed')
     return { success: false, error: errorMessage }
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -1846,7 +1859,7 @@ export async function discardChanges(
   filePath: string,
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   const resolvedWorktree = path.resolve(worktreePath)
   const resolvedTarget = path.resolve(worktreePath, filePath)
   try {
@@ -1878,7 +1891,7 @@ export async function discardChanges(
       cleanUntrackedPaths(worktreePath, [targetPath], options)
     )
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -1948,7 +1961,7 @@ export async function bulkDiscardChanges(
   filePaths: string[],
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   if (filePaths.length === 0) {
     return
   }
@@ -1986,7 +1999,7 @@ export async function bulkDiscardChanges(
       }
     )
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -2012,7 +2025,7 @@ export async function bulkStageFiles(
   filePaths: string[],
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   if (filePaths.length === 0) {
     return
   }
@@ -2025,7 +2038,7 @@ export async function bulkStageFiles(
       )
     }
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -2037,7 +2050,7 @@ export async function bulkUnstageFiles(
   filePaths: string[],
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   if (filePaths.length === 0) {
     return
   }
@@ -2049,6 +2062,6 @@ export async function bulkUnstageFiles(
       })
     }
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
