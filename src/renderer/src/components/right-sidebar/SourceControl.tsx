@@ -7949,6 +7949,11 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
         }}
         onClick={(e) => {
           if (submoduleExpansion) {
+            // Why: a double-click emits two click events; without this guard it
+            // expands and immediately collapses the submodule row.
+            if (e.detail > 1) {
+              return
+            }
             submoduleExpansion.onToggle()
             return
           }

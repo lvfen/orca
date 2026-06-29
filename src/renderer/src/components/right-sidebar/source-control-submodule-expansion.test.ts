@@ -94,15 +94,21 @@ describe('buildSubmoduleChildNodes', () => {
   it('prefixes inner paths, stamps submoduleRoot, and nests one level deeper', () => {
     const parent = fileNode(submoduleEntry({ path: 'flutter_mine' }), 2)
     const inner: GitStatusEntry[] = [
-      { path: 'lib/main.dart', status: 'modified', area: 'unstaged' }
+      {
+        path: 'lib/main.dart',
+        oldPath: 'lib/old-main.dart',
+        status: 'renamed',
+        area: 'unstaged'
+      }
     ]
 
     const [child] = buildSubmoduleChildNodes(parent, inner)
 
     expect(child.path).toBe('flutter_mine/lib/main.dart')
+    expect(child.entry.oldPath).toBe('flutter_mine/lib/old-main.dart')
     expect(child.name).toBe('main.dart')
     expect(child.entry.submoduleRoot).toBe('flutter_mine')
-    expect(child.entry.status).toBe('modified')
+    expect(child.entry.status).toBe('renamed')
     expect(child.depth).toBe(3)
     expect(child.area).toBe('unstaged')
   })
@@ -187,6 +193,34 @@ describe('injectExpandedSubmoduleRows', () => {
     })
     const child = result[1] as SubmoduleSectionTreeNode & { type: 'file' }
     expect(child.entry.submoduleRoot).toBe('flutter_mine')
+  })
+
+  it('keeps inner staged rows staged for tree-view diff routing', () => {
+    const node = fileNode(submoduleEntry({ path: 'flutter_mine' }))
+    const statuses: Record<string, SubmoduleStatusState> = {
+      [FLUTTER_KEY]: {
+        status: 'loaded',
+        entries: [{ path: 'lib/main.dart', status: 'modified', area: 'staged' }]
+      }
+    }
+    const result = injectExpandedSubmoduleRows(
+      [node],
+      new Set([FLUTTER_KEY]),
+      statuses,
+      LOADING,
+      EMPTY
+    )
+
+    expect(result[1]).toMatchObject({
+      type: 'file',
+      key: 'staged::flutter_mine/lib/main.dart',
+      area: 'staged',
+      entry: {
+        path: 'flutter_mine/lib/main.dart',
+        area: 'staged',
+        submoduleRoot: 'flutter_mine'
+      }
+    })
   })
 
   it('expands a pointer-only (commit) submodule into its commit-range files', () => {
@@ -274,6 +308,32 @@ describe('injectExpandedSubmoduleEntries (list view)', () => {
     expect(result[1]).toMatchObject({
       type: 'entry',
       entry: { path: 'flutter_mine/lib/main.dart', submoduleRoot: 'flutter_mine' }
+    })
+  })
+
+  it('keeps staged-only inner entries staged in list view', () => {
+    const entry = submoduleEntry({ path: 'flutter_mine' })
+    const statuses: Record<string, SubmoduleStatusState> = {
+      [FLUTTER_KEY]: {
+        status: 'loaded',
+        entries: [{ path: 'lib/main.dart', status: 'modified', area: 'staged' }]
+      }
+    }
+    const result = injectExpandedSubmoduleEntries(
+      [entry],
+      new Set([FLUTTER_KEY]),
+      statuses,
+      LOADING,
+      EMPTY
+    )
+
+    expect(result[1]).toMatchObject({
+      type: 'entry',
+      entry: {
+        path: 'flutter_mine/lib/main.dart',
+        area: 'staged',
+        submoduleRoot: 'flutter_mine'
+      }
     })
   })
 

@@ -81,6 +81,7 @@ import {
   getStatus,
   getSubmoduleStatus,
   isWithinWorktree,
+  listSubmodulePaths,
   resolveSubmoduleWorktreePath,
   stageFile
 } from './status'
@@ -895,6 +896,33 @@ describe('resolveSubmoduleWorktreePath', () => {
       'Access denied'
     )
     expect(() => resolveSubmoduleWorktreePath('/repo', '../outside')).toThrow('Access denied')
+  })
+})
+
+describe('listSubmodulePaths', () => {
+  beforeEach(() => {
+    clearSubmodulePathsCacheForTests()
+    gitExecFileAsyncMock.mockReset()
+  })
+
+  it('keeps cached .gitmodules paths separate per WSL distro', async () => {
+    gitExecFileAsyncMock.mockImplementation((_args: string[], options?: { wslDistro?: string }) =>
+      Promise.resolve({
+        stdout:
+          options?.wslDistro === 'debian'
+            ? 'submodule.lib.path debian-lib\n'
+            : 'submodule.lib.path ubuntu-lib\n'
+      })
+    )
+
+    await expect(listSubmodulePaths('/repo', { wslDistro: 'ubuntu' })).resolves.toEqual([
+      'ubuntu-lib'
+    ])
+    await expect(listSubmodulePaths('/repo', { wslDistro: 'debian' })).resolves.toEqual([
+      'debian-lib'
+    ])
+
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(2)
   })
 })
 

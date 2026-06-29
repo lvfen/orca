@@ -67,18 +67,21 @@ export function isExpandableSubmoduleEntry(entry: GitStatusEntry): boolean {
  * Build the read-only inner entry for a submodule child row. The inner path is
  * relative to the submodule root, so it is prefixed with the submodule path
  * (drives diff routing) and stamped with `submoduleRoot` (drives read-only
- * gating). The parent area is preserved so staged submodule children open
- * staged diffs against the parent index instead of unstaged worktree diffs.
+ * gating). Staged parent gitlink rows force staged children because their
+ * expansion represents HEAD->index, but worktree-only rows keep the inner
+ * entry's own area so staged-only submodule changes don't open empty diffs.
  */
 export function buildSubmoduleChildEntry(
   submodulePath: string,
   innerEntry: GitStatusEntry,
   parentArea: GitStatusEntry['area'] = innerEntry.area
 ): GitStatusEntry {
+  const area = parentArea === 'staged' ? 'staged' : innerEntry.area
   return {
     ...innerEntry,
     path: `${submodulePath}/${innerEntry.path}`,
-    area: parentArea,
+    ...(innerEntry.oldPath ? { oldPath: `${submodulePath}/${innerEntry.oldPath}` } : {}),
+    area,
     submoduleRoot: submodulePath
   }
 }
@@ -95,11 +98,11 @@ export function buildSubmoduleChildNodes(
     const childEntry = buildSubmoduleChildEntry(submodulePath, innerEntry, parent.entry.area)
     return {
       type: 'file',
-      key: `${parent.area}::${childEntry.path}`,
+      key: `${childEntry.area}::${childEntry.path}`,
       name: basename(childEntry.path),
       path: childEntry.path,
       entry: childEntry,
-      area: parent.area,
+      area: childEntry.area,
       depth: parent.depth + 1
     }
   })

@@ -89,6 +89,12 @@ function gitRuntimeOptionsKey(options: GitRuntimeOptions): readonly unknown[] {
   return [options.wslDistro ?? null]
 }
 
+function getSubmodulePathsCacheKey(worktreePath: string, options: GitRuntimeOptions): string {
+  // Why: the same path string can refer to different filesystem views across
+  // WSL distros, so the `.gitmodules` cache must follow runtime routing.
+  return [worktreePath, ...gitRuntimeOptionsKey(options)].join('\0')
+}
+
 // Why: status tests reuse this reset hook, so every cross-call memoization layer
 // must reset together even though the historical name mentions upstream only.
 export function clearEffectiveUpstreamStatusCacheForTests(): void {
@@ -866,7 +872,8 @@ export async function listSubmodulePaths(
   options: GitRuntimeOptions = {}
 ): Promise<string[]> {
   const now = Date.now()
-  const cached = submodulePathsCache.get(worktreePath)
+  const cacheKey = getSubmodulePathsCacheKey(worktreePath, options)
+  const cached = submodulePathsCache.get(cacheKey)
   if (cached && cached.expiresAt > now) {
     return cached.paths
   }
@@ -892,7 +899,7 @@ export async function listSubmodulePaths(
     // No .gitmodules (or git config failure) — treat as a repo without submodules.
     paths = []
   }
-  submodulePathsCache.set(worktreePath, { paths, expiresAt: now + SUBMODULE_PATHS_CACHE_TTL_MS })
+  submodulePathsCache.set(cacheKey, { paths, expiresAt: now + SUBMODULE_PATHS_CACHE_TTL_MS })
   return paths
 }
 
