@@ -6,7 +6,7 @@ import type { AgentHookInstallState, AgentHookInstallStatus } from '../../shared
 import {
   buildManagedCommandHook,
   createManagedCommandMatcher,
-  buildWindowsAgentHookPostCommand,
+  buildWindowsAgentHookCurlPostCommand,
   getSharedManagedScriptPath,
   hookDefinitionHasManagedCommand,
   MANAGED_HOOK_TIMEOUT_SECONDS,
@@ -120,10 +120,17 @@ function getManagedScriptPath(): string {
   return getSharedManagedScriptPath(getManagedScriptFileName())
 }
 
+// Why: a Windows script path is cmd-safe when it holds only characters cmd.exe
+// passes through untouched (drive letter, backslash, dot, dash, underscore).
+// Spaces or cmd metacharacters force the encoded launcher; `cmd.exe /C` splits
+// bare `.cmd` paths at spaces before the script can run.
+const WINDOWS_CMD_SAFE_PATH = /^[A-Za-z0-9_.:\\~-]+$/
+
 function getManagedCommand(scriptPath: string): string {
-  return process.platform === 'win32'
-    ? wrapWindowsHookCommand(scriptPath)
-    : wrapPosixHookCommand(scriptPath)
+  if (process.platform !== 'win32') {
+    return wrapPosixHookCommand(scriptPath)
+  }
+  return WINDOWS_CMD_SAFE_PATH.test(scriptPath) ? scriptPath : wrapWindowsHookCommand(scriptPath)
 }
 
 function getSystemConfigPath(): string {
@@ -655,9 +662,11 @@ function removeRuntimeManagedHookTrustEntries(configPath: string): void {
         // recognize (and clean up) its own managed trust entries.
         timeoutSec: MANAGED_HOOK_TIMEOUT_SECONDS
       }
-      const expectedHash = computeTrustedHash(expectedEntry)
-      const legacyHash = computeTrustedHash({ ...expectedEntry, timeoutSec: undefined })
-      if (state.trustedHash !== expectedHash && state.trustedHash !== legacyHash) {
+      const recognizedHashes = new Set([
+        computeTrustedHash(expectedEntry),
+        computeTrustedHash({ ...expectedEntry, timeoutSec: undefined })
+      ])
+      if (!state.trustedHash || !recognizedHashes.has(state.trustedHash)) {
         continue
       }
       ourKeys.push(key)
@@ -685,7 +694,7 @@ function getManagedScript(target: 'local' | 'posix' = 'local'): string {
       'if "%ORCA_AGENT_HOOK_PORT%"=="" exit /b 0',
       'if "%ORCA_AGENT_HOOK_TOKEN%"=="" exit /b 0',
       'if "%ORCA_PANE_KEY%"=="" exit /b 0',
-      buildWindowsAgentHookPostCommand('codex'),
+      buildWindowsAgentHookCurlPostCommand('codex'),
       'exit /b 0',
       ''
     ].join('\r\n')

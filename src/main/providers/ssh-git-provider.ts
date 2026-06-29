@@ -104,11 +104,14 @@ export class SshGitProvider implements IGitProvider {
     const upstreamCacheBypassArgs = options?.bypassEffectiveUpstreamNegativeCache
       ? { bypassEffectiveUpstreamNegativeCache: true }
       : {}
-    return (await this.mux.request('git.status', {
+    const request = {
       worktreePath,
       ...includeIgnoredArgs,
       ...upstreamCacheBypassArgs
-    })) as GitStatusResult
+    }
+    return (await (options?.signal
+      ? this.mux.request('git.status', request, { signal: options.signal })
+      : this.mux.request('git.status', request))) as GitStatusResult
   }
 
   async getSubmoduleStatus(

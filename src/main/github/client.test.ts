@@ -106,6 +106,7 @@ import {
   checkOrcaStarred,
   getPRComments,
   getPRForBranch,
+  getPRForBranchOutcome,
   getRepoUpstream,
   getWorkItem,
   getPullRequestPushTarget,
@@ -833,6 +834,215 @@ describe('getPRForBranch', () => {
       { cwd: '/repo-root' }
     )
     expect(pr).toMatchObject({ number: 42, title: 'Fallback PR lookup' })
+  })
+
+  it('reports upstream error when fallback branch discovery fails transiently then retry misses', async () => {
+    resolvePRRepositoryCandidatesMock.mockResolvedValueOnce({
+      candidates: [{ owner: 'stablyai', repo: 'orca' }],
+      headRepo: null
+    })
+    ghExecFileAsyncMock
+      .mockRejectedValueOnce(new Error('HTTP 429: API rate limit exceeded'))
+      .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+
+    const outcome = await getPRForBranchOutcome('/repo-root', 'feature/test')
+
+    expect(outcome).toMatchObject({
+      kind: 'upstream-error',
+      errorType: 'rate_limited'
+    })
+    expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
+      1,
+      [
+        'pr',
+        'list',
+        '--repo',
+        'stablyai/orca',
+        '--head',
+        'feature/test',
+        '--state',
+        'all',
+        '--limit',
+        '1',
+        '--json',
+        'number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,baseRefName,headRefName,baseRefOid,headRefOid'
+      ],
+      { cwd: '/repo-root' }
+    )
+    expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
+      2,
+      ['api', 'repos/stablyai/orca/pulls?head=stablyai%3Afeature%2Ftest&state=all&per_page=1'],
+      { cwd: '/repo-root' }
+    )
+  })
+
+  it('reports no PR when fallback branch discovery cleanly misses', async () => {
+    resolvePRRepositoryCandidatesMock.mockResolvedValueOnce({
+      candidates: [{ owner: 'stablyai', repo: 'orca' }],
+      headRepo: null
+    })
+    ghExecFileAsyncMock.mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+
+    const outcome = await getPRForBranchOutcome('/repo-root', 'feature/test')
+
+    expect(outcome.kind).toBe('no-pr')
+    expect(ghExecFileAsyncMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns found when fallback branch discovery retry finds the PR', async () => {
+    resolvePRRepositoryCandidatesMock.mockResolvedValueOnce({
+      candidates: [{ owner: 'stablyai', repo: 'orca' }],
+      headRepo: null
+    })
+    ghExecFileAsyncMock
+      .mockRejectedValueOnce(new Error('HTTP 429: API rate limit exceeded'))
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify([
+          {
+            number: 42,
+            title: 'Retry branch PR',
+            state: 'open',
+            html_url: 'https://github.com/stablyai/orca/pull/42',
+            updated_at: '2026-03-28T00:00:00Z',
+            draft: false,
+            mergeable: true,
+            base: { ref: 'main', sha: 'base-oid' },
+            head: { ref: 'feature/test', sha: 'retry-head-oid' }
+          }
+        ])
+      })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          number: 42,
+          title: 'Hydrated retry branch PR',
+          state: 'OPEN',
+          url: 'https://github.com/stablyai/orca/pull/42',
+          statusCheckRollup: [],
+          updatedAt: '2026-03-28T00:00:00Z',
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          baseRefName: 'main',
+          headRefName: 'feature/test',
+          baseRefOid: 'base-oid',
+          headRefOid: 'retry-head-oid'
+        })
+      })
+
+    const outcome = await getPRForBranchOutcome('/repo-root', 'feature/test')
+
+    expect(outcome).toMatchObject({
+      kind: 'found',
+      pr: {
+        number: 42,
+        title: 'Hydrated retry branch PR',
+        prRepo: { owner: 'stablyai', repo: 'orca' }
+      }
+    })
+  })
+
+  it('lets fallback PR number recovery win after fallback branch queries throw', async () => {
+    resolvePRRepositoryCandidatesMock.mockResolvedValueOnce({
+      candidates: [{ owner: 'stablyai', repo: 'orca' }],
+      headRepo: null
+    })
+    ghExecFileAsyncMock
+      .mockRejectedValueOnce(new Error('HTTP 429: API rate limit exceeded'))
+      .mockRejectedValueOnce(new Error('HTTP 502: Bad Gateway'))
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          number: 42,
+          title: 'Fallback number recovered PR',
+          state: 'OPEN',
+          url: 'https://github.com/stablyai/orca/pull/42',
+          statusCheckRollup: [],
+          updatedAt: '2026-03-28T00:00:00Z',
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          baseRefName: 'main',
+          headRefName: 'feature/test',
+          baseRefOid: 'base-oid',
+          headRefOid: 'fallback-head-oid'
+        })
+      })
+
+    const outcome = await getPRForBranchOutcome('/repo-root', 'feature/test', null, null, 42)
+
+    expect(outcome).toMatchObject({
+      kind: 'found',
+      pr: {
+        number: 42,
+        title: 'Fallback number recovered PR'
+      }
+    })
+    expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
+      3,
+      [
+        'pr',
+        'view',
+        '42',
+        '--repo',
+        'stablyai/orca',
+        '--json',
+        'number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,reviewDecision,mergeStateStatus,autoMergeRequest,baseRefName,headRefName,baseRefOid,headRefOid'
+      ],
+      { cwd: '/repo-root' }
+    )
+  })
+
+  it('reports upstream error when fallback branch discovery has a network failure', async () => {
+    resolvePRRepositoryCandidatesMock.mockResolvedValueOnce({
+      candidates: [{ owner: 'stablyai', repo: 'orca' }],
+      headRepo: null
+    })
+    ghExecFileAsyncMock
+      .mockRejectedValueOnce(new Error('could not resolve host: api.github.com'))
+      .mockRejectedValueOnce(new Error('could not resolve host: api.github.com'))
+
+    const outcome = await getPRForBranchOutcome('/repo-root', 'feature/test')
+
+    expect(outcome).toMatchObject({
+      kind: 'upstream-error',
+      errorType: 'network'
+    })
+  })
+
+  it('keeps a pending fallback branch error when a later candidate cleanly misses', async () => {
+    resolvePRRepositoryCandidatesMock.mockResolvedValueOnce({
+      candidates: [
+        { owner: 'stablyai', repo: 'orca' },
+        { owner: 'fork', repo: 'orca' }
+      ],
+      headRepo: null
+    })
+    ghExecFileAsyncMock
+      .mockRejectedValueOnce(new Error('HTTP 429: API rate limit exceeded'))
+      .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+      .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+
+    const outcome = await getPRForBranchOutcome('/repo-root', 'feature/test')
+
+    expect(outcome).toMatchObject({
+      kind: 'upstream-error',
+      errorType: 'rate_limited'
+    })
+    expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
+      3,
+      [
+        'pr',
+        'list',
+        '--repo',
+        'fork/orca',
+        '--head',
+        'feature/test',
+        '--state',
+        'all',
+        '--limit',
+        '1',
+        '--json',
+        'number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,baseRefName,headRefName,baseRefOid,headRefOid'
+      ],
+      { cwd: '/repo-root' }
+    )
   })
 
   it('treats a merged branch lookup as a miss before using a fallback PR number', async () => {
@@ -1736,6 +1946,97 @@ describe('getPRForBranch', () => {
     })
   })
 
+  it('uses the tracked upstream remote owner when the fork branch name matches locally', async () => {
+    resolvePRRepositoryCandidatesMock.mockResolvedValueOnce({
+      candidates: [
+        { owner: 'stablyai', repo: 'orca' },
+        { owner: 'origin-owner', repo: 'orca' }
+      ],
+      headRepo: { owner: 'origin-owner', repo: 'orca' }
+    })
+    getOwnerRepoForRemoteMock.mockResolvedValueOnce({ owner: 'brennanb2025', repo: 'orca' })
+    ghExecFileAsyncMock
+      .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+      .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify([
+          {
+            number: 6433,
+            title: 'Recover Windows worktree deletes from long paths',
+            state: 'open',
+            html_url: 'https://github.com/stablyai/orca/pull/6433',
+            updated_at: '2026-06-26T00:00:00Z',
+            draft: false,
+            mergeable: true,
+            base: { ref: 'main', sha: 'base-oid' },
+            head: {
+              ref: 'brennanb2025/worktree-remove-fix',
+              sha: 'same-name-fork-head-oid'
+            }
+          }
+        ])
+      })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          number: 6433,
+          title: 'Recover Windows worktree deletes from long paths',
+          state: 'OPEN',
+          url: 'https://github.com/stablyai/orca/pull/6433',
+          statusCheckRollup: [],
+          updatedAt: '2026-06-26T00:00:00Z',
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          baseRefName: 'main',
+          headRefName: 'brennanb2025/worktree-remove-fix',
+          baseRefOid: 'base-oid',
+          headRefOid: 'same-name-fork-head-oid'
+        })
+      })
+    gitExecFileAsyncMock.mockResolvedValueOnce({
+      stdout: 'brennanb2025/worktree-remove-fix\0brennan/brennanb2025/worktree-remove-fix\n',
+      stderr: ''
+    })
+
+    const pr = await getPRForBranch('/repo-root', 'brennanb2025/worktree-remove-fix')
+
+    expect(getOwnerRepoForRemoteMock).toHaveBeenCalledWith('/repo-root', 'brennan', undefined)
+    expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
+      3,
+      [
+        'api',
+        'repos/stablyai/orca/pulls?head=brennanb2025%3Abrennanb2025%2Fworktree-remove-fix&state=all&per_page=1'
+      ],
+      { cwd: '/repo-root' }
+    )
+    expect(pr).toMatchObject({
+      number: 6433,
+      prRepo: { owner: 'stablyai', repo: 'orca' },
+      headRepo: { owner: 'brennanb2025', repo: 'orca' }
+    })
+  })
+
+  it('does not retry same-name tracked upstream lookup for the same head repo', async () => {
+    resolvePRRepositoryCandidatesMock.mockResolvedValueOnce({
+      candidates: [{ owner: 'acme', repo: 'widgets' }],
+      headRepo: { owner: 'acme', repo: 'widgets' }
+    })
+    getOwnerRepoForRemoteMock.mockResolvedValueOnce({ owner: 'acme', repo: 'widgets' })
+    ghExecFileAsyncMock.mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+    gitExecFileAsyncMock.mockResolvedValueOnce({
+      stdout: 'feature/no-pr\0origin/feature/no-pr\n',
+      stderr: ''
+    })
+
+    await expect(getPRForBranch('/repo-root', 'feature/no-pr')).resolves.toBeNull()
+
+    expect(getOwnerRepoForRemoteMock).toHaveBeenCalledWith('/repo-root', 'origin', undefined)
+    expect(ghExecFileAsyncMock).toHaveBeenCalledTimes(1)
+    expect(ghExecFileAsyncMock).toHaveBeenCalledWith(
+      ['api', 'repos/acme/widgets/pulls?head=acme%3Afeature%2Fno-pr&state=all&per_page=1'],
+      { cwd: '/repo-root' }
+    )
+  })
+
   it('checks the tracked upstream branch through the SSH git provider', async () => {
     const sshGitProvider = {
       exec: vi.fn().mockResolvedValue({
@@ -1782,6 +2083,57 @@ describe('getPRForBranch', () => {
       {}
     )
     expect(pr).toMatchObject({ number: 78, title: 'SSH upstream branch PR' })
+  })
+
+  it('uses the same-name tracked upstream fork owner through the SSH git provider', async () => {
+    const sshGitProvider = {
+      exec: vi.fn().mockResolvedValue({
+        stdout: 'contributor/fix\0fork/contributor/fix\n',
+        stderr: ''
+      })
+    }
+    getSshGitProviderMock.mockReturnValue(sshGitProvider)
+    resolvePRRepositoryCandidatesMock.mockResolvedValueOnce({
+      candidates: [
+        { owner: 'stablyai', repo: 'orca' },
+        { owner: 'origin-owner', repo: 'orca' }
+      ],
+      headRepo: { owner: 'origin-owner', repo: 'orca' }
+    })
+    getOwnerRepoForRemoteMock.mockResolvedValueOnce({ owner: 'fork-owner', repo: 'orca' })
+    ghExecFileAsyncMock
+      .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+      .mockResolvedValueOnce({ stdout: JSON.stringify([]) })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify([
+          {
+            number: 79,
+            title: 'SSH same-name fork PR',
+            state: 'open',
+            html_url: 'https://github.com/stablyai/orca/pull/79',
+            updated_at: '2026-03-28T00:00:00Z',
+            draft: false,
+            mergeable: true,
+            base: { ref: 'main', sha: 'base-oid' },
+            head: { ref: 'contributor/fix', sha: 'same-name-ssh-head-oid' }
+          }
+        ])
+      })
+
+    const pr = await getPRForBranch('/remote/repo-root', 'contributor/fix', undefined, 'ssh-1')
+
+    expect(getOwnerRepoForRemoteMock).toHaveBeenCalledWith('/remote/repo-root', 'fork', 'ssh-1')
+    expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
+      3,
+      ['api', 'repos/stablyai/orca/pulls?head=fork-owner%3Acontributor%2Ffix&state=all&per_page=1'],
+      {}
+    )
+    expect(pr).toMatchObject({
+      number: 79,
+      title: 'SSH same-name fork PR',
+      prRepo: { owner: 'stablyai', repo: 'orca' },
+      headRepo: { owner: 'fork-owner', repo: 'orca' }
+    })
   })
 
   it('caches positive tracked-upstream entries for unsigned SSH runtimes during PR refresh polling', async () => {
@@ -2950,7 +3302,11 @@ describe('GitHub GraphQL rate-limit guard', () => {
   })
 
   it('sets and disables PR auto-merge with explicit PR repos and SSH context', async () => {
-    ghExecFileAsyncMock.mockResolvedValue({ stdout: '', stderr: '' })
+    ghExecFileAsyncMock
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ id: 'PR_kwDO123', headRefOid: 'head-oid' })
+      })
+      .mockResolvedValue({ stdout: '', stderr: '' })
 
     await expect(
       setPRAutoMerge('/remote/repo-root', 7, true, 'squash', 'ssh-1', {
@@ -2967,19 +3323,97 @@ describe('GitHub GraphQL rate-limit guard', () => {
 
     expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
       1,
-      ['pr', 'merge', '7', '--auto', '--squash', '--repo', 'stablyai/orca'],
+      ['pr', 'view', '7', '--json', 'id,headRefOid,baseRefName', '--repo', 'stablyai/orca'],
+      {}
+    )
+    expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
+      2,
+      expect.arrayContaining([
+        'api',
+        'graphql',
+        '-f',
+        'pullRequestId=PR_kwDO123',
+        '-f',
+        'mergeMethod=SQUASH',
+        '-f',
+        'expectedHeadOid=head-oid'
+      ]),
       expect.objectContaining({
         env: expect.objectContaining({ GH_PROMPT_DISABLED: '1' })
       })
     )
     expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
-      2,
+      3,
       ['pr', 'merge', '7', '--disable-auto', '--repo', 'stablyai/orca'],
       expect.objectContaining({
         env: expect.objectContaining({ GH_PROMPT_DISABLED: '1' })
       })
     )
     expect(ghExecFileAsyncMock.mock.calls[0]?.[1]).not.toHaveProperty('cwd')
+  })
+
+  it('enables auto-merge without invoking the direct merge command', async () => {
+    ghExecFileAsyncMock
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ id: 'PR_kwDO123', headRefOid: 'head-oid' })
+      })
+      .mockResolvedValue({ stdout: '', stderr: '' })
+
+    await expect(
+      setPRAutoMerge('/repo-root', 7, true, 'squash', undefined, {
+        owner: 'stablyai',
+        repo: 'orca'
+      })
+    ).resolves.toEqual({ ok: true })
+
+    expect(
+      ghExecFileAsyncMock.mock.calls.some((call) =>
+        (call[0] as string[]).some((arg) => arg.includes('enablePullRequestAutoMerge'))
+      )
+    ).toBe(true)
+    expect(
+      ghExecFileAsyncMock.mock.calls.some(
+        (call) =>
+          call[0][0] === 'pr' && call[0][1] === 'merge' && (call[0] as string[]).includes('--auto')
+      )
+    ).toBe(false)
+  })
+
+  it('uses the queue-aware gh merge path when the base branch has a merge queue', async () => {
+    ghExecFileAsyncMock
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ id: 'PR_kwDO123', headRefOid: 'head-oid', baseRefName: 'main' })
+      })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ data: { repository: { mergeQueue: { id: 'MQ_kw' } } } })
+      })
+      .mockResolvedValue({ stdout: '', stderr: '' })
+
+    await expect(
+      setPRAutoMerge('/repo-root', 7, true, 'squash', undefined, {
+        owner: 'stablyai',
+        repo: 'orca'
+      })
+    ).resolves.toEqual({ ok: true })
+
+    expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
+      2,
+      expect.arrayContaining(['api', 'graphql', '-f', 'branch=main']),
+      { cwd: '/repo-root' }
+    )
+    expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
+      3,
+      ['pr', 'merge', '7', '--auto', '--squash', '--repo', 'stablyai/orca'],
+      expect.objectContaining({
+        cwd: '/repo-root',
+        env: expect.objectContaining({ GH_PROMPT_DISABLED: '1' })
+      })
+    )
+    expect(
+      ghExecFileAsyncMock.mock.calls.some((call) =>
+        (call[0] as string[]).some((arg) => arg.includes('enablePullRequestAutoMerge'))
+      )
+    ).toBe(false)
   })
 
   it('blocks direct merge when GitHub reports required approval', async () => {

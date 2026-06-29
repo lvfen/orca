@@ -1,18 +1,21 @@
-import { toast } from 'sonner'
 import { useAppStore } from '@/store'
 import { buildAgentStartupPlan, type AgentStartupPlan } from '@/lib/tui-agent-startup'
+import type {
+  LaunchAgentBackgroundSessionArgs,
+  LaunchAgentBackgroundSessionResult
+} from '@/lib/agent-background-session-contract'
 import { getAgentLaunchPlatformForRepo } from '@/lib/agent-launch-platform'
 import { CLIENT_PLATFORM } from '@/lib/new-workspace'
-import { track, tuiAgentToAgentKind } from '@/lib/telemetry'
+import { tuiAgentToAgentKind } from '@/lib/telemetry'
 import { pasteDraftWhenAgentReady } from '@/lib/agent-paste-draft'
+import { showAutomationPromptNotSentToast } from '@/lib/agent-background-session-timeout-toast'
 import { getLocalProjectExecutionRuntimeContext } from '@/lib/local-preflight-context'
 import {
   resolveTuiAgentLaunchArgs,
   resolveTuiAgentLaunchEnv
 } from '../../../shared/tui-agent-launch-defaults'
 import { TUI_AGENT_CONFIG } from '../../../shared/tui-agent-config'
-import type { TuiAgent } from '../../../shared/types'
-import type { LaunchSource } from '../../../shared/telemetry-events'
+import { repoIsRemote } from '../../../shared/agent-launch-remote'
 import { makePaneKey } from '../../../shared/stable-pane-id'
 import {
   registerEagerPtyBuffer,
@@ -30,28 +33,9 @@ import {
   toRemoteRuntimePtyId
 } from '@/runtime/runtime-terminal-stream'
 import { createAgentStatusOscProcessor } from '../../../shared/agent-status-osc'
-import type { ParsedAgentStatusPayload } from '../../../shared/agent-status-types'
 import type { RuntimeTerminalCreate } from '../../../shared/runtime-types'
-import { translate } from '@/i18n/i18n'
 import { createSshBackgroundStartupDelivery } from '@/lib/ssh-background-startup-delivery'
 import { shouldUseShellReadyStartupDelivery } from '../../../shared/codex-startup-delivery'
-
-export type LaunchAgentBackgroundSessionArgs = {
-  agent: TuiAgent
-  worktreeId: string
-  prompt?: string
-  launchSource?: LaunchSource
-  title?: string
-  onData?: (chunk: string) => void
-  onExit?: (ptyId: string, code: number) => void
-  onAgentStatus?: (payload: ParsedAgentStatusPayload) => void
-}
-
-export type LaunchAgentBackgroundSessionResult = {
-  tabId: string
-  ptyId: string
-  startupPlan: AgentStartupPlan
-}
 
 export async function launchAgentBackgroundSession(
   args: LaunchAgentBackgroundSessionArgs
@@ -83,6 +67,9 @@ export async function launchAgentBackgroundSession(
         repo.connectionId ? undefined : getLocalProjectExecutionRuntimeContext(store, worktreeId)
       )
     : CLIENT_PLATFORM
+  // Why: SSH remotes deploy the CLI shim as plain `orca`, so the Linux-only
+  // `orca-ide` rename must not be applied for remote launches.
+  const isRemote = repo ? repoIsRemote(repo) : false
   const trimmedPrompt = prompt?.trim() ?? ''
   const hasPrompt = trimmedPrompt.length > 0
   const isFollowupPath = TUI_AGENT_CONFIG[agent].promptInjectionMode === 'stdin-after-start'
@@ -97,6 +84,7 @@ export async function launchAgentBackgroundSession(
       agentArgs,
       agentEnv,
       platform: launchPlatform,
+      isRemote,
       allowEmptyPromptLaunch: true
     })
     pasteDraftAfterLaunch = trimmedPrompt
@@ -108,6 +96,7 @@ export async function launchAgentBackgroundSession(
       agentArgs,
       agentEnv,
       platform: launchPlatform,
+      isRemote,
       allowEmptyPromptLaunch: !hasPrompt
     })
   }
@@ -245,8 +234,8 @@ export async function launchAgentBackgroundSession(
     )
   }
   let exitHandled = false
-  let unsubscribeExit = (): void => {}
-  let unsubscribeData = (): void => {}
+  let unsubscribeExit = (): void => {},
+    unsubscribeData = (): void => {}
   const handleExit = (ptyId: string, code: number): void => {
     if (exitHandled) {
       return
@@ -306,20 +295,9 @@ export async function launchAgentBackgroundSession(
       content: pasteDraftAfterLaunch,
       agent,
       submit: true,
-      onTimeout: () => {
-        toast.message(
-          translate(
-            'auto.lib.launch.agent.background.session.4ca0651d56',
-            "Your automation prompt wasn't sent — open the workspace and paste it."
-          )
-        )
-        track('agent_error', {
-          error_class: 'paste_readiness_timeout',
-          agent_kind: tuiAgentToAgentKind(agent)
-        })
-      }
+      onTimeout: () => showAutomationPromptNotSentToast(agent)
     })
   }
 
-  return { tabId: tab.id, ptyId, startupPlan }
+  return { tabId: tab.id, paneKey, ptyId, startupPlan }
 }

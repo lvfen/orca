@@ -131,6 +131,9 @@ export async function getStatus(
   options: GetStatusOptions = {}
 ): Promise<GitStatusResult> {
   gitDiffReadDedupe.clear()
+  if (options.signal) {
+    return runGetStatus(worktreePath, options)
+  }
   // Why: dedupe only concurrent identical reads; after settle, callers must
   // execute a fresh status read rather than observing a cached result.
   const cacheKey = getStatusReadKey(worktreePath, options)
@@ -212,6 +215,7 @@ async function runGetStatus(
       // Why: status polling is read-like; avoid refreshing the index and racing
       // terminal Git commands on `.git/worktrees/*/index.lock`.
       env: gitOptionalLocksDisabledEnv(),
+      signal: options.signal,
       onStdout: (chunk) => parser.update(chunk, limit)
     })
     if (!stoppedEarly) {

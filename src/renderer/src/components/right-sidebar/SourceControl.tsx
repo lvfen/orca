@@ -669,6 +669,13 @@ type HostedReviewCreationRequestState = {
   status: 'loading' | 'failed'
 }
 
+type HostedReviewCreationProviderHint = {
+  repoId: string | null
+  worktreeId: string | null
+  branch: string
+  provider: HostedReviewProvider
+}
+
 type CreatedHostedReview = {
   provider: HostedReviewProvider
   number: number
@@ -1048,6 +1055,12 @@ function SourceControlInner(): React.JSX.Element {
     useState<HostedReviewCreationState | null>(null)
   const [hostedReviewCreationRequestState, setHostedReviewCreationRequestState] =
     useState<HostedReviewCreationRequestState | null>(null)
+  const hostedReviewCreationProviderHintRef = useRef<HostedReviewCreationProviderHint>({
+    repoId: null,
+    worktreeId: null,
+    branch: '',
+    provider: 'github'
+  })
   const createPrInFlightRef = useRef<Record<string, boolean>>({})
   const [createPrInFlightByWorktree, setCreatePrInFlightByWorktree] = useState<
     Record<string, boolean>
@@ -1389,7 +1402,8 @@ function SourceControlInner(): React.JSX.Element {
           settings,
           activeRepo.id,
           activeRepo.connectionId,
-          activeRepo.executionHostId
+          activeRepo.executionHostId,
+          true
         )
       : null
   const hostedReviewEntry = hostedReviewCacheKey
@@ -1403,7 +1417,8 @@ function SourceControlInner(): React.JSX.Element {
           branchName,
           settings,
           activeRepo.connectionId,
-          activeRepo.executionHostId
+          activeRepo.executionHostId,
+          true
         )
       : null
   const activePrFromQueue = activePrCacheKey ? (prCache[activePrCacheKey]?.data ?? null) : null
@@ -1468,39 +1483,92 @@ function SourceControlInner(): React.JSX.Element {
     shouldResolveHostedReviewCreation &&
     hostedReviewCreationRequestMatchesCurrent &&
     hostedReviewCreationRequestState.status === 'loading' &&
-    hostedReviewCreation === null &&
     hostedReview === null
-  const hostedReviewCreationForHeader = useMemo(() => {
-    if (hostedReviewCreation) {
-      return hostedReviewCreation
-    }
-    if (!isHostedReviewCreationLoading) {
-      return null
-    }
-    const provider = resolveProvisionalHostedReviewProvider({
+  const provisionalHostedReviewProvider = useMemo(
+    () =>
+      resolveProvisionalHostedReviewProvider({
+        hostedReview,
+        hostedReviewCreationState: hostedReviewCreation
+          ? {
+              repoId: activeRepo?.id ?? '',
+              data: hostedReviewCreation
+            }
+          : null,
+        activeRepoId: activeRepo?.id ?? null,
+        linkedGitHubPR,
+        fallbackGitHubPR: fallbackGitHubPRNumber,
+        linkedGitLabMR,
+        linkedBitbucketPR,
+        linkedAzureDevOpsPR,
+        linkedGiteaPR
+      }),
+    [
+      activeRepo?.id,
+      fallbackGitHubPRNumber,
       hostedReview,
-      hostedReviewCreationState,
-      activeRepoId: activeRepo?.id ?? null,
-      linkedGitHubPR,
-      fallbackGitHubPR: fallbackGitHubPRNumber,
-      linkedGitLabMR,
-      linkedBitbucketPR,
+      hostedReviewCreation,
       linkedAzureDevOpsPR,
+      linkedBitbucketPR,
+      linkedGitHubPR,
+      linkedGitLabMR,
       linkedGiteaPR
-    })
-    return buildLoadingHostedReviewCreationEligibility(provider)
+    ]
+  )
+  useEffect(() => {
+    const hasConcreteProviderHint =
+      hostedReview !== null ||
+      hostedReviewCreation !== null ||
+      linkedGitHubPR !== null ||
+      fallbackGitHubPRNumber !== null ||
+      linkedGitLabMR !== null ||
+      linkedAzureDevOpsPR !== null ||
+      linkedGiteaPR !== null
+
+    if (!hasConcreteProviderHint) {
+      return
+    }
+
+    hostedReviewCreationProviderHintRef.current = {
+      repoId: activeRepo?.id ?? null,
+      worktreeId: activeWorktreeId ?? null,
+      branch: branchName,
+      provider: provisionalHostedReviewProvider
+    }
   }, [
     activeRepo?.id,
+    activeWorktreeId,
+    branchName,
     fallbackGitHubPRNumber,
     hostedReview,
     hostedReviewCreation,
-    hostedReviewCreationState,
-    isHostedReviewCreationLoading,
     linkedAzureDevOpsPR,
-    linkedBitbucketPR,
+    linkedGiteaPR,
     linkedGitHubPR,
     linkedGitLabMR,
-    linkedGiteaPR
+    provisionalHostedReviewProvider
+  ])
+  const hostedReviewCreationForHeader = useMemo(() => {
+    // Why: a fresh preflight must disable stale Create PR eligibility while
+    // upstream/dirty/base state is reconciling after commit or push, while
+    // preserving provider copy from the previous safe snapshot.
+    if (isHostedReviewCreationLoading) {
+      const providerHint = hostedReviewCreationProviderHintRef.current
+      const provider =
+        providerHint.repoId === (activeRepo?.id ?? null) &&
+        providerHint.worktreeId === (activeWorktreeId ?? null) &&
+        providerHint.branch === branchName
+          ? providerHint.provider
+          : provisionalHostedReviewProvider
+      return buildLoadingHostedReviewCreationEligibility(provider)
+    }
+    return hostedReviewCreation
+  }, [
+    activeRepo?.id,
+    activeWorktreeId,
+    branchName,
+    hostedReviewCreation,
+    isHostedReviewCreationLoading,
+    provisionalHostedReviewProvider
   ])
   const hasHostedReviewLink = hasPositiveHostedReviewNumberLink({
     linkedGitHubPR,
@@ -3036,6 +3104,9 @@ function SourceControlInner(): React.JSX.Element {
       branch: branchName,
       status: 'loading'
     })
+    // Why: upstream/status changes can make the previous eligibility unsafe
+    // to click while the new preflight is still resolving.
+    setHostedReviewCreationState(null)
     void getHostedReviewCreationEligibility({
       repoPath: activeRepo.path,
       repoId: activeRepo.id,
@@ -4543,6 +4614,7 @@ function SourceControlInner(): React.JSX.Element {
   const branchCompareRunPromiseRef = useRef<Promise<void> | null>(null)
   const refreshBranchCompareRef = useRef<() => Promise<void>>(async () => {})
   const branchCompareStatusHeadRef = useRef<BranchCompareStatusHeadSnapshot | null>(null)
+  const branchCompareRemoteStatusRef = useRef<BranchCompareRemoteStatusSnapshot | null>(null)
 
   const runBranchCompare = useCallback(async () => {
     if (!activeWorktreeId || !worktreePath || !compareBaseRef || isFolder) {
@@ -4736,6 +4808,39 @@ function SourceControlInner(): React.JSX.Element {
     compareBaseRef,
     isBranchVisible,
     isFolder,
+    worktreePath
+  ])
+
+  useEffect(() => {
+    if (!activeWorktreeId || !worktreePath || !isBranchVisible || !compareBaseRef || isFolder) {
+      branchCompareRemoteStatusRef.current = null
+      return
+    }
+
+    // Why: pushing a branch can move its remote-tracking base and ahead count
+    // without changing local HEAD, so the HEAD-change effect alone misses it.
+    const current = {
+      ahead: remoteStatus?.ahead ?? null,
+      baseRef: compareBaseRef,
+      behind: remoteStatus?.behind ?? null,
+      hasUpstream: remoteStatus?.hasUpstream ?? null,
+      upstreamName: remoteStatus?.upstreamName ?? null,
+      worktreeId: activeWorktreeId
+    }
+    const previous = branchCompareRemoteStatusRef.current
+    branchCompareRemoteStatusRef.current = current
+    if (shouldRefreshBranchCompareForRemoteStatus(previous, current)) {
+      void refreshBranchCompareRef.current()
+    }
+  }, [
+    activeWorktreeId,
+    compareBaseRef,
+    isBranchVisible,
+    isFolder,
+    remoteStatus?.ahead,
+    remoteStatus?.behind,
+    remoteStatus?.hasUpstream,
+    remoteStatus?.upstreamName,
     worktreePath
   ])
 
@@ -7007,6 +7112,15 @@ type BranchCompareStatusHeadSnapshot = {
   worktreeId: string
 }
 
+type BranchCompareRemoteStatusSnapshot = {
+  ahead: number | null
+  baseRef: string
+  behind: number | null
+  hasUpstream: boolean | null
+  upstreamName: string | null
+  worktreeId: string
+}
+
 export function shouldRefreshBranchCompareForStatusHead(
   previous: BranchCompareStatusHeadSnapshot | null,
   current: BranchCompareStatusHeadSnapshot
@@ -7017,6 +7131,21 @@ export function shouldRefreshBranchCompareForStatusHead(
     previous.worktreeId === current.worktreeId &&
     previous.baseRef === current.baseRef &&
     previous.statusHead !== current.statusHead
+  )
+}
+
+export function shouldRefreshBranchCompareForRemoteStatus(
+  previous: BranchCompareRemoteStatusSnapshot | null,
+  current: BranchCompareRemoteStatusSnapshot
+): boolean {
+  return (
+    previous !== null &&
+    previous.worktreeId === current.worktreeId &&
+    previous.baseRef === current.baseRef &&
+    (previous.hasUpstream !== current.hasUpstream ||
+      previous.upstreamName !== current.upstreamName ||
+      previous.ahead !== current.ahead ||
+      previous.behind !== current.behind)
   )
 }
 
