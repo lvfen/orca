@@ -39,18 +39,19 @@ export function useSourceControlSubmoduleStatus(
   const [submoduleStatusByKey, setSubmoduleStatusByKey] = useState<
     Record<string, SubmoduleStatusState>
   >({})
+  const activeRuntimeRouteKey = activeRepoSettings?.activeRuntimeEnvironmentId?.trim() ?? ''
+  const activeConnectionRouteKey = getConnectionId(activeWorktreeId ?? null) ?? ''
 
   // Why: a monotonically increasing generation invalidates in-flight requests
-  // when the active worktree/path changes, so a slow response from a previous
-  // worktree (common over SSH) can't write stale submodule status into the
-  // current panel — even when both worktrees share the same submodule path.
+  // when the active worktree/path/runtime/SSH route changes, so a slow response
+  // from a previous target can't write stale submodule status into this panel.
   const generationRef = useRef(0)
 
   useEffect(() => {
     generationRef.current += 1
     setExpandedSubmoduleKeys(new Set())
     setSubmoduleStatusByKey({})
-  }, [activeWorktreeId, worktreePath])
+  }, [activeConnectionRouteKey, activeRuntimeRouteKey, activeWorktreeId, worktreePath])
 
   const fetchSubmoduleStatus = useCallback(
     async (expansionKey: string): Promise<void> => {

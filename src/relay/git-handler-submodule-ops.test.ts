@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import * as path from 'path'
 import type { GitExec } from './git-handler-ops'
 import {
   SUBMODULE_PATHS_CACHE_TTL_MS,
   createSubmodulePathsCache,
-  listSubmodulePathsCached
+  listSubmodulePathsCached,
+  resolveSubmoduleWorktreePath
 } from './git-handler-submodule-ops'
 
 function gitmodulesExec(paths: string[]): { git: GitExec; calls: () => number } {
@@ -68,5 +70,22 @@ describe('listSubmodulePathsCached', () => {
     expect(first).toEqual([])
     expect(second).toEqual([])
     expect(calls).toBe(1)
+  })
+})
+
+describe('resolveSubmoduleWorktreePath', () => {
+  it('resolves relative submodule paths inside the selected worktree', () => {
+    expect(resolveSubmoduleWorktreePath('/repo', 'vendor/lib')).toBe(
+      path.resolve('/repo', 'vendor/lib')
+    )
+  })
+
+  it('rejects empty, absolute, null-byte, and escaping paths', () => {
+    expect(() => resolveSubmoduleWorktreePath('/repo', '')).toThrow('Access denied')
+    expect(() => resolveSubmoduleWorktreePath('/repo', path.resolve('/tmp/outside'))).toThrow(
+      'Access denied'
+    )
+    expect(() => resolveSubmoduleWorktreePath('/repo', 'vendor\0lib')).toThrow('Access denied')
+    expect(() => resolveSubmoduleWorktreePath('/repo', '../outside')).toThrow('Access denied')
   })
 })

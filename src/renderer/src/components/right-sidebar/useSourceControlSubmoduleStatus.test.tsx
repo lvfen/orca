@@ -45,16 +45,18 @@ let latest: UseSourceControlSubmoduleStatusResult | null = null
 function Probe({
   worktreeId,
   worktreePath,
-  entries
+  entries,
+  settings = null
 }: {
   worktreeId: string
   worktreePath: string
   entries: GitStatusEntry[]
+  settings?: { activeRuntimeEnvironmentId: string | null } | null
 }): null {
   latest = useSourceControlSubmoduleStatus({
     activeWorktreeId: worktreeId,
     worktreePath,
-    activeRepoSettings: null,
+    activeRepoSettings: settings,
     entries
   })
   return null
@@ -168,6 +170,63 @@ describe('useSourceControlSubmoduleStatus', () => {
     expect(latest?.submoduleStatusByKey['unstaged::sub']).toEqual({
       status: 'loaded',
       entries: [innerEntry('from-b.ts')]
+    })
+  })
+
+  it('drops a late response from a previous runtime target on the same worktree', async () => {
+    const envA = deferred<{ entries: GitStatusEntry[] }>()
+    const envB = deferred<{ entries: GitStatusEntry[] }>()
+    mocks.getRuntimeGitSubmoduleStatus.mockImplementation(
+      (ctx: { settings?: { activeRuntimeEnvironmentId?: string | null } | null }) =>
+        ctx.settings?.activeRuntimeEnvironmentId === 'env-b' ? envB.promise : envA.promise
+    )
+
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    roots.push(root)
+
+    await act(async () => {
+      root.render(
+        <Probe
+          worktreeId="A"
+          worktreePath="/a"
+          settings={{ activeRuntimeEnvironmentId: 'env-a' }}
+          entries={[submoduleEntry()]}
+        />
+      )
+    })
+    await act(async () => {
+      latest?.toggleSubmodule(submoduleEntry())
+    })
+    await flush()
+
+    await act(async () => {
+      root.render(
+        <Probe
+          worktreeId="A"
+          worktreePath="/a"
+          settings={{ activeRuntimeEnvironmentId: 'env-b' }}
+          entries={[submoduleEntry()]}
+        />
+      )
+    })
+    await act(async () => {
+      latest?.toggleSubmodule(submoduleEntry())
+    })
+    await flush()
+
+    await act(async () => {
+      envB.resolve({ entries: [innerEntry('from-env-b.ts')] })
+    })
+    await flush()
+    await act(async () => {
+      envA.resolve({ entries: [innerEntry('from-env-a.ts')] })
+    })
+    await flush()
+
+    expect(latest?.submoduleStatusByKey['unstaged::sub']).toEqual({
+      status: 'loaded',
+      entries: [innerEntry('from-env-b.ts')]
     })
   })
 

@@ -87,6 +87,20 @@ export function findContainingSubmodule(submodulePaths: string[], filePath: stri
   return best
 }
 
+// Why: .gitmodules is repo-controlled; validate its paths before relay reads
+// or diffs inside a submodule worktree.
+export function resolveSubmoduleWorktreePath(worktreePath: string, submodulePath: string): string {
+  if (!submodulePath || submodulePath.includes('\0') || path.isAbsolute(submodulePath)) {
+    throw new Error('Access denied: invalid submodule path')
+  }
+  const resolved = path.resolve(worktreePath, submodulePath)
+  const rel = path.relative(path.resolve(worktreePath), resolved)
+  if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new Error('Access denied: submodule path resolves outside the worktree')
+  }
+  return resolved
+}
+
 async function readGitlinkOidFromTree(
   git: GitExec,
   worktreePath: string,
@@ -136,7 +150,7 @@ export async function resolveSubmoduleCommitRange(
   submodulePath: string,
   staged = false
 ): Promise<{ fromOid: string; toOid: string }> {
-  const submoduleWorktreePath = path.join(worktreePath, submodulePath)
+  const submoduleWorktreePath = resolveSubmoduleWorktreePath(worktreePath, submodulePath)
   const fromOid = staged
     ? await readGitlinkOidFromTree(git, worktreePath, 'HEAD', submodulePath)
     : (await readGitlinkOidFromIndex(git, worktreePath, submodulePath)) ||
@@ -209,7 +223,7 @@ export async function computeSubmodulePointerDiff(
   staged: boolean,
   compareAgainstHead = false
 ) {
-  const submoduleWorktreePath = path.join(worktreePath, submodulePath)
+  const submoduleWorktreePath = resolveSubmoduleWorktreePath(worktreePath, submodulePath)
   let leftOid = ''
   let rightOid = ''
   if (staged) {

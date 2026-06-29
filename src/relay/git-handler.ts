@@ -25,6 +25,7 @@ import {
   createSubmodulePathsCache,
   findContainingSubmodule,
   listSubmodulePathsCached,
+  resolveSubmoduleWorktreePath,
   resolveSubmoduleCommitRange,
   type SubmodulePathsCache
 } from './git-handler-submodule-ops'
@@ -297,11 +298,7 @@ export class GitHandler {
     const submodulePath = params.submodulePath as string
     const area = resolveSubmoduleStatusArea(params)
     const staged = area === 'staged'
-    const resolved = path.resolve(worktreePath, submodulePath)
-    const rel = path.relative(path.resolve(worktreePath), resolved)
-    if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
-      throw new Error(`Submodule path "${submodulePath}" resolves outside the worktree`)
-    }
+    const resolved = resolveSubmoduleWorktreePath(worktreePath, submodulePath)
     const workingResult = await getStatusOp(this.git.bind(this), {
       ...params,
       worktreePath: resolved
@@ -388,7 +385,10 @@ export class GitHandler {
                 compareAgainstHead
               )
             }
-            const submoduleWorktreePath = path.join(worktreePath, matchedSubmodule)
+            const submoduleWorktreePath = resolveSubmoduleWorktreePath(
+              worktreePath,
+              matchedSubmodule
+            )
             const innerPath = normalizedFilePath.slice(matchedSubmodule.length + 1)
             const { fromOid, toOid } = await resolveSubmoduleCommitRange(
               this.git.bind(this),
