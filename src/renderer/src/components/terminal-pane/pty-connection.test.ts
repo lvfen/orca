@@ -10044,7 +10044,11 @@ describe('connectPanePty', () => {
       prompt: 'Fix notification payloads',
       updatedAt: Date.now(),
       stateStartedAt: Date.now(),
-      agentType: 'codex',
+      // Why: the live completion title is '* Claude done' (explicit Claude), so
+      // the stored snapshot must name the same agent to be reused for the rich
+      // notification. A mismatched (e.g. codex) snapshot is treated as stale
+      // pane-reuse residue and dropped — see use-notification-dispatch.test.ts.
+      agentType: 'claude',
       paneKey,
       terminalTitle: '* Claude done',
       stateHistory: [],
@@ -10098,7 +10102,7 @@ describe('connectPanePty', () => {
         worktreeLabel: 'feat/notis',
         hasMultipleActiveRepos: true,
         terminalTitle: '* Claude done',
-        agentType: 'codex',
+        agentType: 'claude',
         agentState: 'done',
         agentPrompt: 'Fix notification payloads',
         agentToolName: 'Edit',
