@@ -8594,8 +8594,9 @@ describe('connectPanePty', () => {
     setReattachPaneTitle('renamed shell')
 
     const pane = createPane(1)
-    // Why: an inspectable buffer whose cursor sits mid-prompt models a shell
-    // foreground after a dead cursor-agent run left its screen in scrollback.
+    // Why: an inspectable buffer whose visible rows carry no Cursor Agent
+    // screen models a shell foreground after a dead run left its screen in
+    // scrollback.
     Object.assign(pane.terminal.buffer.active, {
       cursorX: 2,
       getLine: () => undefined

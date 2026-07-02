@@ -2,7 +2,7 @@
 import type { PaneManager, ManagedPane } from '@/lib/pane-manager/pane-manager'
 import type { ManagedPaneInternal } from '@/lib/pane-manager/pane-manager-types'
 import type { IBuffer, IDisposable } from '@xterm/xterm'
-import { resolveCursorAgentImeAnchor } from '@/lib/pane-manager/terminal-ime-anchor'
+import { viewportShowsCursorAgentScreen } from '@/lib/pane-manager/terminal-ime-anchor'
 import {
   detectAgentStatusFromTitle,
   isGeminiTerminalTitle,
@@ -232,29 +232,21 @@ type TerminalWithInspectableBuffer = {
 
 // Why: replay bytes can carry a dead run's screen in scrollback; once xterm
 // has parsed the replay, the visible screen is the ground truth for whether a
-// cursor-agent UI is actually foreground. Returns null when the buffer is not
-// inspectable (e.g. test doubles) so callers can skip the check.
+// cursor-agent UI is actually foreground. Shape-only (header + input row) so a
+// live agent whose cursor happens to sit at the caret is not misjudged.
+// Returns null when the buffer is not inspectable (e.g. test doubles).
 function parsedViewportShowsCursorAgentScreen(
   terminal: TerminalWithInspectableBuffer
 ): boolean | null {
   const buffer = terminal.buffer?.active
-  if (
-    !buffer ||
-    typeof buffer.getLine !== 'function' ||
-    typeof buffer.cursorX !== 'number' ||
-    typeof buffer.cursorY !== 'number'
-  ) {
+  if (!buffer || typeof buffer.getLine !== 'function') {
     return null
   }
-  return (
-    resolveCursorAgentImeAnchor({
-      buffer,
-      rows: terminal.rows,
-      cols: terminal.cols,
-      cursorX: buffer.cursorX,
-      cursorY: buffer.cursorY
-    }) !== null
-  )
+  return viewportShowsCursorAgentScreen({
+    buffer,
+    rows: terminal.rows,
+    cols: terminal.cols
+  })
 }
 
 function terminalHasFocusReportingEnabled(terminal: TerminalWithFocusMode): boolean {
@@ -1325,10 +1317,14 @@ export function connectPanePty(
     return runtimeTitle ?? tabTitle ?? null
   }
   let reattachReplayPayloadHasCursorAgentSignal = false
+  // Why: post-parse veto callbacks must only judge the latest replay frame; a
+  // newer frame bumps the generation so a stale callback stands down.
+  let reattachReplayPayloadSignalGeneration = 0
   const rememberReattachPayloadAgentSignal = (
     data: string,
     opts: { fullScreenReplay: boolean }
   ): void => {
+    reattachReplayPayloadSignalGeneration += 1
     // Why: ordinary scrollback can mention agent names. Treat replay bytes as
     // a live Cursor Agent signal only when they look like its restored screen.
     const signal = hasCursorAgentReattachPayloadScreenSignal(data)
@@ -3501,8 +3497,14 @@ export function connectPanePty(
     }
 
     const sendFocusedReattachFocusInAfterReplay = (): void => {
+      const scheduledGeneration = reattachReplayPayloadSignalGeneration
       void waitForTerminalOutputParsed(pane.terminal).then(() => {
         if (disposed) {
+          return
+        }
+        // Why: a newer replay frame owns the judgment; its own post-parse
+        // callback will re-evaluate against its own viewport.
+        if (scheduledGeneration !== reattachReplayPayloadSignalGeneration) {
           return
         }
         // Why: the replay-byte signal also matches a dead run's screen sitting
