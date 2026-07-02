@@ -25,6 +25,9 @@ export type ConnectionVerdict =
   | { kind: 'warning'; label: string } // "Can't connect"
   | { kind: 'unreachable'; label: string; reason: 'never-connected' | 'stale' }
   | { kind: 'auth-failed'; label: string }
+  // Why: relay slot taken over by the same token elsewhere (close code 4409).
+  // Terminal — no auto-reconnect; UI prompts to re-pair on the PC.
+  | { kind: 'occupied'; label: string }
 
 // Why: the rpc-client's lastConnectedAt is a one-shot timestamp; we have
 // to recompute "are we currently stale" against now() each render.
@@ -40,6 +43,10 @@ export function classifyConnection(args: {
 
   if (state === 'auth-failed') {
     return { kind: 'auth-failed', label: 'Auth failed' }
+  }
+
+  if (state === 'occupied') {
+    return { kind: 'occupied', label: 'Taken over' }
   }
 
   // Connected / connecting / handshaking are normal.

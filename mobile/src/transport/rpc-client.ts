@@ -15,20 +15,22 @@ import {
   decryptBytes
 } from './e2ee'
 import {
-  TerminalStreamOpcode,
-  decodeTerminalStreamFrame,
-  decodeTerminalStreamJson,
-  decodeTerminalStreamText
-} from './terminal-stream-protocol'
-import {
   decodeBrowserScreencastFrame,
   type BrowserScreencastFrame
 } from './browser-screencast-protocol'
+import {
+  dispatchTerminalBinaryFrame,
+  isTerminalSubscribedResult,
+  isBrowserScreencastReadyResult,
+  websocketPayloadToUint8,
+  type TerminalSnapshotState
+} from './rpc-client-frame-decoding'
 import {
   buildTerminalUnsubscribeParams,
   updateTerminalSubscriptionViewport as updateCachedTerminalSubscriptionViewport
 } from './rpc-client-terminal-subscription'
 import { describeSocketEvent } from './socket-event-debug'
+import { RelayCloseCode, encodeClientJoin, parseRelayControlFrame } from './relay-protocol'
 
 type PendingRequest = {
   resolve: (response: RpcResponse) => void
@@ -59,12 +61,6 @@ type StreamRequest = {
   subscriptionId?: string
   cancelled?: boolean
   sent?: boolean
-}
-
-type TerminalSnapshotState = {
-  streamId: number
-  meta: Record<string, unknown>
-  chunks: string[]
 }
 
 export type RpcClient = {
@@ -131,6 +127,11 @@ const AUTH_RETRY_BUDGET = 3
 const REQUEST_TIMEOUT_MS = 30_000
 const CONNECT_TIMEOUT_MS = 12_000
 const HANDSHAKE_TIMEOUT_MS = 5_000
+// Why: relay pre-handshake budget. After the socket opens we send client-join
+// and wait for room-ready (the desktop host may still be connecting to the
+// relay). If it never arrives, close so the normal backoff reconnect retries —
+// this is how the phone heals once the host comes online.
+const RELAY_JOIN_TIMEOUT_MS = 12_000
 // Why: RN's WebSocket implementation may not expose static readyState
 // constants, but the protocol value for CONNECTING is stable across runtimes.
 const WEBSOCKET_CONNECTING_STATE = 0
@@ -148,12 +149,21 @@ const WEBSOCKET_CONNECTING_STATE = 0
 // window and well below iOS's typical background-disconnect window.
 const ACTIVITY_PROBE_INTERVAL_MS = 20_000
 
+export type RelayConnectOptions = {
+  // The orca-mb_ mobile token sent in the relay client-join frame. Its presence
+  // switches connect() into relay mode: open socket → client-join → room-ready
+  // → existing E2EE flow, with `endpoint` pointing at the relay URL.
+  mobileToken: string
+}
+
 export type ConnectOptions = {
   onStateChange?: (state: ConnectionState) => void
   // Fires for every observable lifecycle event so the UI can render a
   // detailed connection log. Useful when 'Connecting…' hangs forever
   // (e.g. broken Tailscale route) and you need to see *where* it's stuck.
   onLog?: ConnectionLogSink
+  // When set, run the relay pre-handshake before the E2EE flow.
+  relay?: RelayConnectOptions
 }
 
 export function connect(
@@ -169,6 +179,9 @@ export function connect(
       : (optionsOrLegacy ?? {})
   const onStateChange = options.onStateChange
   const onLog = options.onLog
+  // Why: relay mode runs an extra client-join → room-ready step on top of the
+  // shared E2EE handshake. null = direct LAN host (no pre-handshake).
+  const relayMobileToken = options.relay?.mobileToken ?? null
   let logCounter = 0
   function emitLog(level: ConnectionLogLevel, message: string, detail?: string) {
     if (!onLog) {
@@ -189,6 +202,7 @@ export function connect(
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let connectTimer: ReturnType<typeof setTimeout> | null = null
   let handshakeTimer: ReturnType<typeof setTimeout> | null = null
+  let relayJoinTimer: ReturnType<typeof setTimeout> | null = null
   let activityProbeTimer: ReturnType<typeof setInterval> | null = null
   let intentionallyClosed = false
   // Why: consecutive auth rejections since the last successful connect. We
@@ -270,9 +284,13 @@ export function connect(
         }
         waiter.resolve()
       }
-    } else if (next === 'disconnected' || next === 'auth-failed') {
+    } else if (next === 'disconnected' || next === 'auth-failed' || next === 'occupied') {
       const reason =
-        next === 'auth-failed' ? 'Unauthorized — pairing may be revoked' : 'Connection closed'
+        next === 'auth-failed'
+          ? 'Unauthorized — pairing may be revoked'
+          : next === 'occupied'
+            ? 'Connection taken over by another device'
+            : 'Connection closed'
       rejectConnectWaiters(reason)
     }
     for (const listener of stateListeners) {
@@ -359,6 +377,42 @@ export function connect(
 
     ws = new WebSocket(endpoint)
     const openingWs = ws
+    // Why: relay-only — true between client-join and room-ready. While set we
+    // only accept relay control frames and hold back the E2EE hello.
+    let awaitingRoomReady = false
+
+    function beginE2EEHandshake() {
+      setState('handshaking')
+      // Why: generate a fresh ephemeral keypair for each connection. This
+      // provides forward secrecy — compromising one session's key doesn't
+      // compromise past or future sessions.
+      const ephemeral = generateKeyPair()
+      const hello = JSON.stringify({
+        type: 'e2ee_hello',
+        publicKeyB64: publicKeyToBase64(ephemeral.publicKey)
+      })
+      openingWs.send(hello)
+      emitLog('info', 'Sent e2ee_hello', 'Awaiting server e2ee_ready')
+
+      sharedKey = deriveSharedKey(ephemeral.secretKey, serverPublicKey)
+
+      handshakeTimer = setTimeout(() => {
+        handshakeTimer = null
+        if (ws !== openingWs || state !== 'handshaking') {
+          return
+        }
+        console.log('[net] handshake-timeout fired (e2ee_authenticated never arrived)', {
+          timeoutMs: HANDSHAKE_TIMEOUT_MS
+        })
+        emitLog(
+          'error',
+          'Handshake timeout',
+          `No e2ee_ready/e2ee_authenticated within ${HANDSHAKE_TIMEOUT_MS / 1000}s`
+        )
+        openingWs.close()
+      }, HANDSHAKE_TIMEOUT_MS)
+    }
+
     const ignoreStaleSocketEvent = (eventName: string): boolean => {
       if (ws === openingWs) {
         return false
@@ -399,40 +453,37 @@ export function connect(
       if (ignoreStaleSocketEvent('open')) {
         return
       }
-      console.log('[net] ws.onopen', { attempt: reconnectAttempt })
+      console.log('[net] ws.onopen', { attempt: reconnectAttempt, relay: !!relayMobileToken })
       clearConnectTimer()
       reconnectAttempt = 0
-      setState('handshaking')
+
+      if (relayMobileToken) {
+        // Why: relay hosts must claim the room before any E2EE bytes flow.
+        // Send client-join and defer the E2EE hello until room-ready arrives.
+        setState('handshaking')
+        emitLog('success', 'WebSocket open', 'Joining relay room')
+        openingWs.send(encodeClientJoin(relayMobileToken))
+        awaitingRoomReady = true
+        emitLog('info', 'Sent client-join', 'Awaiting room-ready')
+        relayJoinTimer = setTimeout(() => {
+          relayJoinTimer = null
+          if (ws === openingWs && awaitingRoomReady) {
+            console.log('[net] relay-join-timeout fired (room-ready never arrived)', {
+              timeoutMs: RELAY_JOIN_TIMEOUT_MS
+            })
+            emitLog(
+              'error',
+              'Relay join timeout',
+              `No room-ready within ${RELAY_JOIN_TIMEOUT_MS / 1000}s — desktop offline?`
+            )
+            openingWs.close()
+          }
+        }, RELAY_JOIN_TIMEOUT_MS)
+        return
+      }
+
       emitLog('success', 'WebSocket open', 'Starting E2EE handshake')
-
-      // Why: generate a fresh ephemeral keypair for each connection.
-      // This provides forward secrecy — compromising one session's key
-      // doesn't compromise past or future sessions.
-      const ephemeral = generateKeyPair()
-      const hello = JSON.stringify({
-        type: 'e2ee_hello',
-        publicKeyB64: publicKeyToBase64(ephemeral.publicKey)
-      })
-      openingWs.send(hello)
-      emitLog('info', 'Sent e2ee_hello', 'Awaiting server e2ee_ready')
-
-      sharedKey = deriveSharedKey(ephemeral.secretKey, serverPublicKey)
-
-      handshakeTimer = setTimeout(() => {
-        handshakeTimer = null
-        if (ws !== openingWs || state !== 'handshaking') {
-          return
-        }
-        console.log('[net] handshake-timeout fired (e2ee_authenticated never arrived)', {
-          timeoutMs: HANDSHAKE_TIMEOUT_MS
-        })
-        emitLog(
-          'error',
-          'Handshake timeout',
-          `No e2ee_ready/e2ee_authenticated within ${HANDSHAKE_TIMEOUT_MS / 1000}s`
-        )
-        openingWs.close()
-      }, HANDSHAKE_TIMEOUT_MS)
+      beginE2EEHandshake()
     }
 
     ws.onmessage = (event) => {
@@ -447,6 +498,31 @@ export function connect(
       // pongs and stream events both bump this — anything from the wire.
       lastInboundAt = Date.now()
       const raw = typeof rawData === 'string' ? rawData : null
+
+      // Why: relay pre-handshake — until room-ready we only accept relay
+      // control frames; E2EE bytes start flowing only after the room is
+      // claimed (host present). host-offline keeps the socket parked until the
+      // join timer recycles us, so the phone heals once the desktop reconnects.
+      if (awaitingRoomReady) {
+        if (raw !== null) {
+          const control = parseRelayControlFrame(raw)
+          if (control?.type === 'room-ready') {
+            awaitingRoomReady = false
+            if (relayJoinTimer) {
+              clearTimeout(relayJoinTimer)
+              relayJoinTimer = null
+            }
+            emitLog('success', 'Relay room ready', 'Starting E2EE handshake')
+            beginE2EEHandshake()
+            return
+          }
+          if (control?.type === 'host-offline') {
+            emitLog('warn', 'Host offline', 'Desktop not connected to the relay yet')
+            return
+          }
+        }
+        return
+      }
 
       // Why: during handshaking, e2ee_ready is plaintext because it precedes
       // encrypted auth; e2ee_authenticated/e2ee_error are encrypted.
@@ -681,7 +757,7 @@ export function connect(
       })
       lastWsClosedAt = closeAt
       currentWsOpenedAt = null
-      handleSocketClosed(openingWs)
+      handleSocketClosed(openingWs, { code: e?.code })
     }
 
     ws.onerror = (event) => {
@@ -703,7 +779,10 @@ export function connect(
     }
   }
 
-  function handleSocketClosed(closedWs: WebSocket, opts: { timedOut?: boolean } = {}) {
+  function handleSocketClosed(
+    closedWs: WebSocket,
+    opts: { timedOut?: boolean; code?: number } = {}
+  ) {
     if (ws !== closedWs) {
       console.log('[net] handleSocketClosed STALE — ignoring (ws already swapped)', {
         state,
@@ -721,11 +800,36 @@ export function connect(
       clearTimeout(handshakeTimer)
       handshakeTimer = null
     }
+    if (relayJoinTimer) {
+      clearTimeout(relayJoinTimer)
+      relayJoinTimer = null
+    }
     stopActivityProbe()
     if (intentionallyClosed) {
       console.log('[net] handleSocketClosed — intentional close')
       setState('disconnected')
       rejectAllPending('Connection closed')
+      return
+    }
+    // Why: relay terminal close codes must NOT auto-reconnect. With supersede
+    // semantics two ends sharing a token would kick each other forever
+    // (4409 occupied), and a revoked token never recovers without a re-pair
+    // (4401 unauthorized). 4408 peer-recycled + transport codes fall through
+    // to the normal backoff reconnect below.
+    if (opts.code === RelayCloseCode.Occupied) {
+      console.log('[net] relay occupied — terminal, no reconnect')
+      emitLog('error', 'Connection taken over', 'This token is in use on another device')
+      intentionallyClosed = true
+      setState('occupied')
+      rejectAllPending('Connection taken over by another device')
+      return
+    }
+    if (opts.code === RelayCloseCode.Unauthorized) {
+      console.log('[net] relay unauthorized — terminal, re-pair')
+      emitLog('error', 'Pairing no longer valid', 'Re-pair on the PC')
+      intentionallyClosed = true
+      setState('auth-failed')
+      rejectAllPending('Unauthorized — pairing may be revoked')
       return
     }
     console.log('[net] handleSocketClosed → reconnect', {
@@ -954,7 +1058,7 @@ export function connect(
       handleBrowserBinaryFrame(browserFrame)
       return
     }
-    handleTerminalBinaryFrame(bytes)
+    dispatchTerminalBinaryFrame(bytes, terminalStreamListeners, terminalSnapshots)
   }
 
   function handleBrowserBinaryFrame(frame: BrowserScreencastFrame) {
@@ -966,75 +1070,6 @@ export function connect(
       return
     }
     stream.onBinaryFrame?.(frame)
-  }
-
-  function handleTerminalBinaryFrame(bytes: Uint8Array) {
-    const frame = decodeTerminalStreamFrame(bytes)
-    if (!frame) {
-      return
-    }
-    const listener = terminalStreamListeners.get(frame.streamId)
-    if (!listener) {
-      return
-    }
-    if (frame.opcode === TerminalStreamOpcode.Output) {
-      listener({
-        type: 'data',
-        streamId: frame.streamId,
-        chunk: decodeTerminalStreamText(frame.payload)
-      })
-      return
-    }
-    if (frame.opcode === TerminalStreamOpcode.SnapshotStart) {
-      const meta = decodeTerminalStreamJson<Record<string, unknown>>(frame.payload)
-      if (!meta) {
-        return
-      }
-      terminalSnapshots.set(frame.streamId, { streamId: frame.streamId, meta, chunks: [] })
-      return
-    }
-    if (frame.opcode === TerminalStreamOpcode.SnapshotChunk) {
-      const snapshot = terminalSnapshots.get(frame.streamId)
-      if (!snapshot) {
-        return
-      }
-      snapshot.chunks.push(decodeTerminalStreamText(frame.payload))
-      return
-    }
-    if (frame.opcode === TerminalStreamOpcode.SnapshotEnd) {
-      const snapshot = terminalSnapshots.get(frame.streamId)
-      if (!snapshot) {
-        return
-      }
-      terminalSnapshots.delete(frame.streamId)
-      const kind = snapshot.meta.kind === 'resized' ? 'resized' : 'scrollback'
-      listener({
-        ...snapshot.meta,
-        type: kind,
-        streamId: frame.streamId,
-        serialized: snapshot.chunks.join('')
-      })
-      return
-    }
-    if (frame.opcode === TerminalStreamOpcode.Resized) {
-      const meta = decodeTerminalStreamJson<Record<string, unknown>>(frame.payload)
-      if (!meta) {
-        return
-      }
-      listener({
-        ...meta,
-        type: 'resized',
-        streamId: frame.streamId
-      })
-      return
-    }
-    if (frame.opcode === TerminalStreamOpcode.Error) {
-      listener({
-        type: 'error',
-        streamId: frame.streamId,
-        message: decodeTerminalStreamText(frame.payload)
-      })
-    }
   }
 
   function sendEncrypted(request: unknown): boolean {
@@ -1269,6 +1304,10 @@ export function connect(
         clearTimeout(handshakeTimer)
         handshakeTimer = null
       }
+      if (relayJoinTimer) {
+        clearTimeout(relayJoinTimer)
+        relayJoinTimer = null
+      }
       stopActivityProbe()
       if (ws) {
         ws.close()
@@ -1279,50 +1318,4 @@ export function connect(
       rejectAllPending('Client closed')
     }
   }
-}
-
-function isTerminalSubscribedResult(
-  value: unknown
-): value is { type: 'subscribed'; streamId: number } {
-  return (
-    !!value &&
-    typeof value === 'object' &&
-    (value as { type?: unknown }).type === 'subscribed' &&
-    typeof (value as { streamId?: unknown }).streamId === 'number'
-  )
-}
-
-function isBrowserScreencastReadyResult(
-  value: unknown
-): value is { type: 'ready'; subscriptionId: string } {
-  return (
-    !!value &&
-    typeof value === 'object' &&
-    (value as { type?: unknown }).type === 'ready' &&
-    typeof (value as { subscriptionId?: unknown }).subscriptionId === 'string'
-  )
-}
-
-async function websocketPayloadToUint8(value: unknown): Promise<Uint8Array | null> {
-  if (value instanceof Uint8Array) {
-    return value
-  }
-  if (value instanceof ArrayBuffer) {
-    return new Uint8Array(value)
-  }
-  if (value && typeof value === 'object' && 'arrayBuffer' in value) {
-    const blob = value as { arrayBuffer: () => Promise<ArrayBuffer> }
-    return new Uint8Array(await blob.arrayBuffer())
-  }
-  if (typeof FileReader !== 'undefined' && value instanceof Blob) {
-    return new Promise((resolve) => {
-      const reader = new FileReader()
-      reader.onload = () => {
-        resolve(reader.result instanceof ArrayBuffer ? new Uint8Array(reader.result) : null)
-      }
-      reader.onerror = () => resolve(null)
-      reader.readAsArrayBuffer(value)
-    })
-  }
-  return null
 }

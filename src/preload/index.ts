@@ -69,6 +69,7 @@ import type {
 import type { RuntimeRpcResponse } from '../shared/runtime-rpc-envelope'
 import type { PublicKnownRuntimeEnvironment } from '../shared/runtime-environments'
 import type { RemoteWorkspaceChangedEvent } from '../shared/remote-workspace-types'
+import type { RelayStatus } from '../shared/relay-protocol'
 import type {
   RuntimeMobileMarkdownRequest,
   RuntimeMobileMarkdownResponse
@@ -3807,7 +3808,26 @@ const api = {
       ipcRenderer.invoke('mobile:revokeRuntimeAccess', args),
 
     isWebSocketReady: (): Promise<{ ready: boolean; endpoint: string | null }> =>
-      ipcRenderer.invoke('mobile:isWebSocketReady')
+      ipcRenderer.invoke('mobile:isWebSocketReady'),
+
+    setRelayConfig: (args: { pcToken: string }): Promise<{ ok: boolean; status: RelayStatus }> =>
+      ipcRenderer.invoke('mobile:setRelayConfig', args),
+
+    clearRelayConfig: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('mobile:clearRelayConfig'),
+
+    getRelayStatus: (): Promise<{ status: RelayStatus }> =>
+      ipcRenderer.invoke('mobile:getRelayStatus'),
+
+    getRelayServerToken: (): Promise<
+      | { available: false }
+      | {
+          available: true
+          qrDataUrl: string
+          publicKeyB64: string
+          deviceToken: string
+          roomId: string
+        }
+    > => ipcRenderer.invoke('mobile:getRelayServerToken')
   },
 
   agentStatus: {

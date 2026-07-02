@@ -56,6 +56,16 @@ export type ConnectionState =
   | 'disconnected'
   | 'reconnecting'
   | 'auth-failed'
+  // Why: relay close code 4409 — the host slot was taken over by the same
+  // token on another device. Terminal (no auto-reconnect); the user must
+  // re-pair on the PC to reclaim the slot.
+  | 'occupied'
+
+// Why: 'lan' hosts dial a LAN/Tailnet WebSocket directly; 'relay' hosts dial an
+// outbound relay and run a client-join → room-ready pre-handshake before the
+// shared E2EE flow. For relay hosts `endpoint` holds the relay URL, and the
+// `mobileToken` (credential, kept in the keychain) + `roomId` identify the room.
+export type HostKind = 'lan' | 'relay'
 
 export type HostProfile = {
   id: string
@@ -64,26 +74,41 @@ export type HostProfile = {
   deviceToken: string
   publicKeyB64: string
   lastConnected: number
+  kind: HostKind
+  mobileToken?: string
+  roomId?: string
 }
 
-export const HostProfileSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  endpoint: z.string().min(1),
-  deviceToken: z.string().min(1),
-  publicKeyB64: z.string().min(1),
-  lastConnected: z.number().finite()
-})
+export const HostProfileSchema = z
+  .object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    endpoint: z.string().min(1),
+    deviceToken: z.string().min(1),
+    publicKeyB64: z.string().min(1),
+    lastConnected: z.number().finite(),
+    // Why: records written before relay support lack `kind`; default to 'lan'
+    // so existing LAN hosts keep working without a migration pass.
+    kind: z.enum(['lan', 'relay']).default('lan'),
+    mobileToken: z.string().min(1).optional(),
+    roomId: z.string().min(1).optional()
+  })
+  .refine((host) => host.kind !== 'relay' || (!!host.mobileToken && !!host.roomId), {
+    message: 'relay hosts require mobileToken and roomId'
+  })
 
-// Why: persisted host record after the v0.0.3 keychain split. The
-// deviceToken is held in iOS Keychain via expo-secure-store and joined
-// in at load time; it must NOT appear in AsyncStorage anymore.
+// Why: persisted host record after the v0.0.3 keychain split. The deviceToken
+// (and, for relay hosts, the mobileToken) are held in the iOS Keychain via
+// expo-secure-store and joined in at load time; they must NOT appear in
+// AsyncStorage.
 export const StoredHostProfileSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   endpoint: z.string().min(1),
   publicKeyB64: z.string().min(1),
-  lastConnected: z.number().finite()
+  lastConnected: z.number().finite(),
+  kind: z.enum(['lan', 'relay']).default('lan'),
+  roomId: z.string().min(1).optional()
 })
 
 export type StoredHostProfile = z.infer<typeof StoredHostProfileSchema>

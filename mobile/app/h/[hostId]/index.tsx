@@ -41,7 +41,7 @@ import {
   classifyConnection,
   type ConnectionVerdict
 } from '../../../src/transport/connection-health'
-import type { RpcSuccess } from '../../../src/transport/types'
+import type { HostProfile, RpcSuccess } from '../../../src/transport/types'
 import { StatusDot } from '../../../src/components/StatusDot'
 import { NewWorktreeModalController } from '../../../src/components/NewWorktreeModalController'
 import { MobileRepoIcon } from '../../../src/components/MobileRepoIcon'
@@ -55,6 +55,8 @@ import { ConfirmModal } from '../../../src/components/ConfirmModal'
 import { BottomDrawer } from '../../../src/components/BottomDrawer'
 import { ProtocolBlockScreen } from '../../../src/components/ProtocolBlockScreen'
 import { AuthFailedBanner } from '../../../src/components/AuthFailedBanner'
+import { OccupiedBanner } from '../../../src/components/OccupiedBanner'
+import { WorktreeListSeparator } from '../../../src/components/WorktreeListSeparator'
 import { WorkspaceDetailPlaceholder } from '../../../src/components/WorkspaceDetailPlaceholder'
 import { getCachedWorktrees } from '../../../src/cache/worktree-cache'
 import { setCachedRepos } from '../../../src/cache/repo-cache'
@@ -159,6 +161,9 @@ export function HostScreen({
   const [repoIconsByName, setRepoIconsByName] = useState<Map<string, RepoIcon>>(new Map())
   const [repoSummaries, setRepoSummaries] = useState<RepoSummary[]>([])
   const [hostName, setHostName] = useState('')
+  // Why: re-pair routing differs by kind — relay hosts re-pair via the Server
+  // Token flow (/add-relay), LAN hosts via the QR scan (/pair-scan).
+  const [hostKind, setHostKind] = useState<HostProfile['kind']>('lan')
   const [error, setError] = useState('')
   const [compatVerdict, setCompatVerdict] = useState<CompatVerdict>({ kind: 'ok' })
   const [lastKnownWorktrees, setLastKnownWorktrees] = useState<Worktree[]>(initialCache ?? [])
@@ -367,6 +372,7 @@ export function HostScreen({
         return
       }
       setHostName(host.name)
+      setHostKind(host.kind)
       void updateLastConnected(host.id)
     })
     return () => {
@@ -1123,7 +1129,15 @@ export function HostScreen({
         <AuthFailedBanner
           canRetry={!!hostId}
           onRetry={() => hostId && void forceReconnectHost(hostId)}
-          onRepair={() => router.push('/pair-scan')}
+          onRepair={() => router.push(hostKind === 'relay' ? '/add-relay' : '/pair-scan')}
+          onRemove={() => setConfirmRemoveHost(true)}
+        />
+      )}
+
+      {/* Relay slot taken over (close code 4409) — terminal, no auto-reconnect */}
+      {connState === 'occupied' && (
+        <OccupiedBanner
+          onRepair={() => router.push('/add-relay')}
           onRemove={() => setConfirmRemoveHost(true)}
         />
       )}
@@ -1222,7 +1236,7 @@ export function HostScreen({
               </Pressable>
             )
           }}
-          ItemSeparatorComponent={ListSeparator}
+          ItemSeparatorComponent={WorktreeListSeparator}
           renderItem={({ item }) => (
             <WorktreeListRow
               item={item}
@@ -1451,10 +1465,6 @@ export default function HostWorktreeRoute() {
   return <HostScreen />
 }
 
-function ListSeparator() {
-  return <View style={styles.separator} />
-}
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -1669,12 +1679,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.textMuted,
     marginLeft: spacing.xs
-  },
-  separator: {
-    height: 1,
-    backgroundColor: colors.borderSubtle,
-    marginLeft: spacing.lg + 24,
-    marginRight: spacing.lg
   },
   filterModalHeader: {
     flexDirection: 'row',

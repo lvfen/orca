@@ -107,5 +107,35 @@ export const getMobilePaneSearchEntries = createLocalizedCatalog(() => [
       ),
       ...translateSearchKeyword('auto.components.settings.mobile.pane.search.dbccde3a60', 'close')
     ]
+  },
+  {
+    title: translate(
+      'auto.components.settings.mobile.pane.search.relayTitle',
+      'Server Token (remote bridge)'
+    ),
+    description: translate(
+      'auto.components.settings.mobile.pane.search.relayDesc',
+      'Connect to your phone through a self-hosted relay, with no inbound port or shared network.'
+    ),
+    keywords: [
+      ...translateSearchKeyword('auto.components.settings.mobile.pane.search.6db86f445f', 'mobile'),
+      ...translateSearchKeyword(
+        'auto.components.settings.mobile.pane.search.relayKwRelay',
+        'relay'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.mobile.pane.search.relayKwServer',
+        'server'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.mobile.pane.search.relayKwToken',
+        'token'
+      ),
+      ...translateSearchKeyword(
+        'auto.components.settings.mobile.pane.search.relayKwBridge',
+        'bridge'
+      ),
+      ...translateSearchKeyword('auto.components.settings.mobile.pane.search.126afc5dbd', 'remote')
+    ]
   }
 ])

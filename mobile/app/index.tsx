@@ -12,7 +12,8 @@ import {
   RefreshCw,
   PowerOff,
   Edit3,
-  ListTodo
+  ListTodo,
+  Globe
 } from 'lucide-react-native'
 import { ClaudeIcon, OpenAIIcon } from '../src/components/AgentIcons'
 import {
@@ -53,15 +54,8 @@ import {
   type TaskProvider
 } from '../src/tasks/mobile-task-providers'
 import { useResponsiveLayout } from '../src/layout/responsive-layout'
-
-function endpointLabel(endpoint: string): string {
-  try {
-    const url = new URL(endpoint)
-    return `${url.hostname}${url.port ? `:${url.port}` : ''}`
-  } catch {
-    return endpoint
-  }
-}
+import { endpointLabel, formatDuration } from '../src/home/home-screen-formatters'
+import { clientKey } from '../src/transport/rpc-client-identity'
 
 type StatsSummary = {
   totalAgentsSpawned: number
@@ -106,36 +100,6 @@ const TASK_PROVIDER_LABELS: Record<TaskProvider, string> = {
   github: 'GitHub',
   gitlab: 'GitLab',
   linear: 'Linear'
-}
-
-function formatDuration(ms: number): string {
-  const totalMinutes = Math.floor(ms / 60_000)
-  const totalHours = Math.floor(totalMinutes / 60)
-  const days = Math.floor(totalHours / 24)
-  const hours = totalHours % 24
-  if (days > 0) {
-    return `${days}d ${hours}h`
-  }
-  const minutes = totalMinutes % 60
-  if (totalHours > 0) {
-    return `${totalHours}h ${minutes}m`
-  }
-  return `${totalMinutes}m`
-}
-
-// Why: derive a stable per-instance identity for RpcClient so the wireUp
-// effect's dep key changes when forceReconnect swaps the underlying client
-// for a host (without this, listeners stay attached to the closed client
-// and notifications/accounts subs never re-attach).
-const clientIdentities = new WeakMap<RpcClient, number>()
-let nextClientIdentity = 1
-function clientKey(client: RpcClient): number {
-  let id = clientIdentities.get(client)
-  if (id == null) {
-    id = nextClientIdentity++
-    clientIdentities.set(client, id)
-  }
-  return id
 }
 
 function fetchStats(
@@ -759,6 +723,12 @@ export default function HomeScreen() {
               <QrCode size={17} color={colors.bgBase} />
               <Text style={styles.primaryButtonText}>Pair Desktop</Text>
             </Pressable>
+            {/* Remote bridge alternative: reach this desktop from anywhere via a
+                self-hosted relay (no LAN, no inbound port). */}
+            <Pressable style={styles.secondaryButton} onPress={() => router.push('/add-relay')}>
+              <Globe size={15} color={colors.textSecondary} />
+              <Text style={styles.secondaryButtonText}>Add via Server Token</Text>
+            </Pressable>
           </View>
 
           <View style={styles.stepsSection}>
@@ -928,6 +898,15 @@ export default function HomeScreen() {
                     <QrCode size={16} color={colors.textSecondary} />
                   </View>
                   <Text style={styles.quickActionLabel}>Pair Desktop</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.quickAction, pressed && styles.hostCardPressed]}
+                  onPress={() => router.push('/add-relay')}
+                >
+                  <View style={styles.quickActionIcon}>
+                    <Globe size={16} color={colors.textSecondary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Server Token</Text>
                 </Pressable>
                 <Pressable
                   disabled={!primaryConnectedHost}
@@ -1529,6 +1508,19 @@ const styles = StyleSheet.create({
     color: colors.bgBase,
     fontSize: 15,
     fontWeight: '700'
+  },
+  secondaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: spacing.md,
+    paddingHorizontal: 16,
+    paddingVertical: 10
+  },
+  secondaryButtonText: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    fontWeight: '600'
   },
 
   /* ─── Onboarding steps ─── */

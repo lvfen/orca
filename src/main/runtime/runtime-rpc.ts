@@ -13,14 +13,17 @@ import { writeRuntimeMetadata } from './runtime-metadata'
 import { RpcDispatcher } from './rpc/dispatcher'
 import type { RpcRequest, RpcResponse } from './rpc/core'
 import { errorResponse } from './rpc/errors'
-import type { RpcMessageContext, RpcTransport } from './rpc/transport'
+import type { MobileTransport, RpcMessageContext, RpcTransport } from './rpc/transport'
 import { UnixSocketTransport } from './rpc/unix-socket-transport'
 import { WebSocketTransport } from './rpc/ws-transport'
+import { RelayTransport, type RelayStatus } from './rpc/relay-transport'
 import type { WebSocket } from 'ws'
 import { DeviceRegistry, type DeviceScope } from './device-registry'
 import { loadOrCreateE2EEKeypair, type E2EEKeypair } from './e2ee-keypair'
 import { E2EEChannel } from './rpc/e2ee-channel'
 import { encodePairingOffer, PAIRING_OFFER_VERSION } from '../../shared/pairing'
+import { decodePcToken } from '../../shared/relay-token'
+import { clearRelayPcToken, saveRelayPcToken } from './relay-config-store'
 import {
   decodeTerminalStreamFrame,
   type TerminalStreamFrame
@@ -36,6 +39,10 @@ type OrcaRuntimeRpcServerOptions = {
   enableWebSocket?: boolean
   wsPort?: number
   webClientRoot?: string
+  // Why: optional relay bridge token to dial on startup. When present the
+  // runtime opens an outbound host socket to the relay so a phone can reach it
+  // from outside the LAN. May also be set/cleared later via setRelayConfig.
+  relayPcToken?: string
   // Why: test-only overrides for the two time-bound constants below.
   // Production callers must not pass these — defaults are set by the design
   // doc (§3.1) and changing them in production would weaken the admission
@@ -377,6 +384,12 @@ export class OrcaRuntimeRpcServer {
   private e2eeKeypair: E2EEKeypair | null = null
   private tlsFingerprint: string | null = null
   private wsTransport: WebSocketTransport | null = null
+  // Why: the relay bridge runs on its own lifecycle (set/cleared at runtime via
+  // IPC), separate from the metadata-published transports, so it is tracked in
+  // its own field rather than activeTransports.
+  private relayTransport: RelayTransport | null = null
+  private relayPcToken: string | null
+  private relayStatus: RelayStatus = { state: 'disconnected', attempt: 0, phoneOnline: false }
   private activeTransports: RpcTransport[] = []
   private transports: RuntimeTransportMetadata[] = []
   // Why: each WebSocket connection has its own E2EE channel that manages the
@@ -407,6 +420,7 @@ export class OrcaRuntimeRpcServer {
     enableWebSocket = false,
     wsPort = DEFAULT_WS_PORT,
     webClientRoot,
+    relayPcToken,
     keepaliveIntervalMs = KEEPALIVE_INTERVAL_MS,
     longPollCap = LONG_POLL_CAP
   }: OrcaRuntimeRpcServerOptions) {
@@ -418,6 +432,7 @@ export class OrcaRuntimeRpcServer {
     this.enableWebSocket = enableWebSocket
     this.wsPort = wsPort
     this.webClientRoot = webClientRoot
+    this.relayPcToken = relayPcToken ?? null
     this.keepaliveIntervalMs = keepaliveIntervalMs
     this.longPollCap = longPollCap
   }
@@ -500,6 +515,180 @@ export class OrcaRuntimeRpcServer {
       deviceId: device.deviceId,
       webClientUrl:
         this.webClientRoot && scope === 'runtime' ? createWebClientUrl(endpoint, pairingUrl) : null
+    }
+  }
+
+  getRelayStatus(): RelayStatus {
+    return this.relayTransport?.getStatus() ?? this.relayStatus
+  }
+
+  // Why: set/replace the relay bridge token at runtime (from the IPC layer).
+  // Persists the bearer token to a hardened file and restarts the outbound host
+  // socket against the new relay/room. A token that doesn't decode is rejected
+  // without persisting so a typo never sticks across restarts.
+  async setRelayConfig(pcToken: string): Promise<RelayStatus> {
+    if (!decodePcToken(pcToken)) {
+      return { state: 'unauthorized', attempt: 0, phoneOnline: false }
+    }
+    this.relayPcToken = pcToken
+    saveRelayPcToken(this.userDataPath, pcToken)
+    await this.startRelayTransport(pcToken)
+    return this.getRelayStatus()
+  }
+
+  async clearRelayConfig(): Promise<void> {
+    this.relayPcToken = null
+    clearRelayPcToken(this.userDataPath)
+    await this.stopRelayTransport()
+  }
+
+  // Why: the phone needs the desktop's E2EE public key plus a relay-scoped
+  // device token (validated by the same DeviceRegistry as LAN pairing) to
+  // authenticate the tunnel, and the roomId/relayUrl to dial. This is the
+  // payload behind the "Server Token" QR. The relay device token is stable so
+  // the phone keeps working across reconnects; revoke it to cut access.
+  getRelayPairingInfo():
+    | { available: false }
+    | {
+        available: true
+        publicKeyB64: string
+        deviceToken: string
+        roomId: string
+        relayUrl: string
+      } {
+    const publicKeyB64 = this.getE2EEPublicKey()
+    const pcToken = this.relayPcToken
+    if (!publicKeyB64 || !pcToken) {
+      return { available: false }
+    }
+    const decoded = decodePcToken(pcToken)
+    if (!decoded) {
+      return { available: false }
+    }
+    this.ensureMobileSecurityState()
+    const existing = this.deviceRegistry!.listDevices().find((d) => d.scope === 'relay')
+    const device = existing ?? this.deviceRegistry!.addDevice('Relay phone', 'relay')
+    return {
+      available: true,
+      publicKeyB64,
+      deviceToken: device.token,
+      roomId: decoded.payload.roomId,
+      relayUrl: decoded.payload.relayUrl
+    }
+  }
+
+  // Why: deviceRegistry + E2EE keypair back both the LAN WebSocket and the
+  // relay bridge. Either entry point may be the first to need them, so init is
+  // idempotent and lazy rather than tied to the WebSocket startup block.
+  private ensureMobileSecurityState(): void {
+    if (!this.deviceRegistry) {
+      this.deviceRegistry = new DeviceRegistry(this.userDataPath)
+    }
+    if (!this.e2eeKeypair) {
+      this.e2eeKeypair = loadOrCreateE2EEKeypair(this.userDataPath)
+    }
+  }
+
+  // Why: each mobile-bearing socket (LAN ws or relay host socket) gets its own
+  // E2EEChannel that runs the handshake before any RPC is processed, then
+  // transparently decrypts inbound and encrypts outbound. Channels are keyed by
+  // the socket instance, so a fresh socket (e.g. a relay reconnect) always gets
+  // a fresh channel and the old one is reclaimed on close.
+  private wireMobileTransport(transport: MobileTransport): void {
+    transport.onMessage((msg, _reply, ws) => {
+      let channel = this.e2eeChannels.get(ws)
+      if (!channel) {
+        // Why: stable per-ws id used as the cleanup-index key for streaming
+        // subscriptions, so the server can reap them exactly when this socket
+        // closes (without affecting other live sockets that share the same
+        // deviceToken).
+        this.wsConnectionIds.set(ws, randomBytes(8).toString('hex'))
+        channel = new E2EEChannel(ws, {
+          serverSecretKey: this.e2eeKeypair!.secretKey,
+          validateToken: (token) => this.deviceRegistry?.validateToken(token) != null,
+          onReady: (ch) => {
+            if (ch.deviceToken) {
+              transport.setClientId(ws, ch.deviceToken)
+              // Why: mark the device as actually connected so it appears in
+              // the "Paired Devices" list. Devices that were only generated as
+              // QR codes but never scanned stay hidden.
+              const device = this.deviceRegistry?.validateToken(ch.deviceToken)
+              if (device) {
+                this.deviceRegistry?.updateLastSeen(device.deviceId)
+              }
+            }
+          },
+          onError: (code, reason) => {
+            this.e2eeChannels.get(ws)?.destroy()
+            this.e2eeChannels.delete(ws)
+            ws.close(code, reason)
+          }
+        })
+        channel.onMessage((plaintext, encryptedReply, encryptedBinaryReply) => {
+          const authenticatedDeviceToken = this.e2eeChannels.get(ws)?.deviceToken ?? null
+          void this.handleWebSocketMessage(
+            plaintext,
+            encryptedReply,
+            encryptedBinaryReply,
+            transport,
+            ws,
+            authenticatedDeviceToken
+          )
+        })
+        channel.onBinaryMessage((bytes) => this.handleWebSocketBinaryMessage(bytes, ws))
+        this.e2eeChannels.set(ws, channel)
+      }
+      channel.handleRawMessage(msg)
+    })
+
+    // Why: when a mobile client disconnects, the runtime must clean up
+    // connection-scoped state like mobile-fit overrides and the E2EE channel to
+    // prevent orphaned state. A single paired device can hold multiple
+    // concurrent sockets (host screen + accounts screen, etc.), so destroy the
+    // channel for THIS exact ws and skip the per-client teardown when other
+    // sockets for the same token are still alive.
+    transport.onConnectionClose((clientId, ws, hasOtherConnections) => {
+      this.abortWebSocketDispatches(ws)
+      // Why: sweep streaming subscriptions for THIS ws regardless of
+      // hasOtherConnections, so per-ws listeners (notifications, accounts,
+      // terminal) don't leak across reconnects. This is independent of the
+      // deviceToken-scoped onClientDisconnected.
+      const connectionId = this.wsConnectionIds.get(ws)
+      if (connectionId) {
+        this.runtime.cleanupSubscriptionsForConnection(connectionId)
+        this.runtime.cancelMobileDictationForConnection(connectionId)
+        this.binaryStreamHandlers.delete(connectionId)
+        this.wsConnectionIds.delete(ws)
+      }
+      const channel = this.e2eeChannels.get(ws)
+      if (channel) {
+        channel.destroy()
+        this.e2eeChannels.delete(ws)
+      }
+      if (clientId && !hasOtherConnections) {
+        this.runtime.onClientDisconnected(clientId)
+      }
+    })
+  }
+
+  private async startRelayTransport(pcToken: string): Promise<void> {
+    await this.stopRelayTransport()
+    this.ensureMobileSecurityState()
+    const transport = new RelayTransport({ pcToken })
+    this.relayTransport = transport
+    this.wireMobileTransport(transport)
+    transport.onStatusChange((status) => {
+      this.relayStatus = status
+    })
+    await transport.start()
+  }
+
+  private async stopRelayTransport(): Promise<void> {
+    const transport = this.relayTransport
+    this.relayTransport = null
+    this.relayStatus = { state: 'disconnected', attempt: 0, phoneOnline: false }
+    if (transport) {
+      await transport.stop()
     }
   }
 
@@ -668,8 +857,7 @@ export class OrcaRuntimeRpcServer {
     // tweetnacl) rather than TLS, since React Native can't pin self-signed certs.
     if (this.enableWebSocket) {
       try {
-        this.deviceRegistry = new DeviceRegistry(this.userDataPath)
-        this.e2eeKeypair = loadOrCreateE2EEKeypair(this.userDataPath)
+        this.ensureMobileSecurityState()
 
         const wsTransport = new WebSocketTransport({
           host: '0.0.0.0',
@@ -678,83 +866,10 @@ export class OrcaRuntimeRpcServer {
         })
         this.wsTransport = wsTransport
 
-        // Why: each WebSocket connection gets an E2EE channel that handles the
-        // handshake before any RPC messages are processed. The channel decrypts
-        // inbound messages and encrypts outbound replies transparently.
-        wsTransport.onMessage((msg, _reply, ws) => {
-          let channel = this.e2eeChannels.get(ws)
-          if (!channel) {
-            // Why: stable per-ws id used as the cleanup-index key for
-            // streaming subscriptions, so the server can reap them exactly
-            // when this socket closes (without affecting other live sockets
-            // that share the same deviceToken).
-            this.wsConnectionIds.set(ws, randomBytes(8).toString('hex'))
-            channel = new E2EEChannel(ws, {
-              serverSecretKey: this.e2eeKeypair!.secretKey,
-              validateToken: (token) => this.deviceRegistry?.validateToken(token) != null,
-              onReady: (ch) => {
-                if (ch.deviceToken) {
-                  wsTransport.setClientId(ws, ch.deviceToken)
-                  // Why: mark the device as actually connected so it appears
-                  // in the "Paired Devices" list. Devices that were only
-                  // generated as QR codes but never scanned stay hidden.
-                  const device = this.deviceRegistry?.validateToken(ch.deviceToken)
-                  if (device) {
-                    this.deviceRegistry?.updateLastSeen(device.deviceId)
-                  }
-                }
-              },
-              onError: (code, reason) => {
-                this.e2eeChannels.get(ws)?.destroy()
-                this.e2eeChannels.delete(ws)
-                ws.close(code, reason)
-              }
-            })
-            channel.onMessage((plaintext, encryptedReply, encryptedBinaryReply) => {
-              const authenticatedDeviceToken = this.e2eeChannels.get(ws)?.deviceToken ?? null
-              void this.handleWebSocketMessage(
-                plaintext,
-                encryptedReply,
-                encryptedBinaryReply,
-                wsTransport,
-                ws,
-                authenticatedDeviceToken
-              )
-            })
-            channel.onBinaryMessage((bytes) => this.handleWebSocketBinaryMessage(bytes, ws))
-            this.e2eeChannels.set(ws, channel)
-          }
-          channel.handleRawMessage(msg)
-        })
-
-        // Why: when a mobile client disconnects, the runtime must clean up
-        // connection-scoped state like mobile-fit overrides and the E2EE
-        // channel to prevent orphaned state. A single paired device can hold
-        // multiple concurrent sockets (host screen + accounts screen, etc.),
-        // so destroy the channel for THIS exact ws and skip the per-client
-        // teardown when other sockets for the same token are still alive.
-        wsTransport.onConnectionClose((clientId, ws, hasOtherConnections) => {
-          this.abortWebSocketDispatches(ws)
-          // Why: sweep streaming subscriptions for THIS ws regardless of
-          // hasOtherConnections, so per-ws listeners (notifications,
-          // accounts, terminal) don't leak across reconnects. This is
-          // independent of the deviceToken-scoped onClientDisconnected.
-          const connectionId = this.wsConnectionIds.get(ws)
-          if (connectionId) {
-            this.runtime.cleanupSubscriptionsForConnection(connectionId)
-            this.runtime.cancelMobileDictationForConnection(connectionId)
-            this.binaryStreamHandlers.delete(connectionId)
-            this.wsConnectionIds.delete(ws)
-          }
-          const channel = this.e2eeChannels.get(ws)
-          if (channel) {
-            channel.destroy()
-            this.e2eeChannels.delete(ws)
-          }
-          if (clientId && !hasOtherConnections) {
-            this.runtime.onClientDisconnected(clientId)
-          }
-        })
+        // Why: a LAN WebSocket and a relay host socket are wired identically —
+        // one socket ⇒ one E2EEChannel ⇒ one dispatch context. Share that
+        // wiring so the relay path inherits the audited admission/teardown.
+        this.wireMobileTransport(wsTransport)
 
         await wsTransport.start()
         activeTransports.push(wsTransport)
@@ -788,9 +903,18 @@ export class OrcaRuntimeRpcServer {
       await Promise.all(activeTransports.map((t) => t.stop().catch(() => {}))).catch(() => {})
       throw error
     }
+
+    // Why: the relay bridge is best-effort and independent of the local control
+    // plane — a relay that can't be dialed must never block runtime startup.
+    if (this.relayPcToken) {
+      await this.startRelayTransport(this.relayPcToken).catch((error) => {
+        console.error('[runtime] Failed to start relay transport:', error)
+      })
+    }
   }
 
   async stop(): Promise<void> {
+    await this.stopRelayTransport()
     const transports = this.activeTransports
     this.activeTransports = []
     this.transports = []
@@ -886,7 +1010,7 @@ export class OrcaRuntimeRpcServer {
     rawMessage: string,
     reply: (response: string) => void,
     sendBinary: (response: Uint8Array<ArrayBufferLike>) => boolean | void,
-    wsTransport?: WebSocketTransport,
+    transport?: MobileTransport,
     ws?: WebSocket,
     authenticatedDeviceToken?: string | null
   ): Promise<void> {
@@ -927,7 +1051,10 @@ export class OrcaRuntimeRpcServer {
       reply(JSON.stringify(this.buildError(request.id, 'unauthorized', 'Invalid device token')))
       return
     }
-    if (device.scope === 'mobile' && !MOBILE_RPC_METHOD_ALLOWLIST.has(request.method)) {
+    if (
+      (device.scope === 'mobile' || device.scope === 'relay') &&
+      !MOBILE_RPC_METHOD_ALLOWLIST.has(request.method)
+    ) {
       reply(
         JSON.stringify(
           this.buildError(
@@ -942,8 +1069,8 @@ export class OrcaRuntimeRpcServer {
 
     // Why: associate the deviceToken with this WebSocket so ws.on('close')
     // can notify the runtime which mobile client disconnected.
-    if (wsTransport && ws) {
-      wsTransport.setClientId(ws, token)
+    if (transport && ws) {
+      transport.setClientId(ws, token)
     }
 
     const longPoll = isLongPollRequest(request)

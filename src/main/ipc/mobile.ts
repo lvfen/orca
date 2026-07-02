@@ -189,4 +189,54 @@ export function registerMobileHandlers(rpcServer: OrcaRuntimeRpcServer): void {
       endpoint: rpcServer.getWebSocketEndpoint()
     }
   })
+
+  // Why: relay bridge config. The pcToken is the bearer credential for the
+  // host slot; the server validates + persists it to a hardened file and dials
+  // the relay. getRelayServerToken returns the out-of-band E2EE identity (the
+  // desktop public key + a relay-scoped device token) the phone needs to trust
+  // the tunnel — this is the payload behind the "Server Token" QR.
+  ipcMain.handle('mobile:setRelayConfig', async (_event, args: { pcToken: string }) => {
+    const pcToken = typeof args?.pcToken === 'string' ? args.pcToken.trim() : ''
+    if (!pcToken) {
+      return { ok: false as const, status: rpcServer.getRelayStatus() }
+    }
+    const status = await rpcServer.setRelayConfig(pcToken)
+    return { ok: status.state !== 'unauthorized', status }
+  })
+
+  ipcMain.handle('mobile:clearRelayConfig', async () => {
+    await rpcServer.clearRelayConfig()
+    return { ok: true as const }
+  })
+
+  ipcMain.handle('mobile:getRelayStatus', () => {
+    return { status: rpcServer.getRelayStatus() }
+  })
+
+  ipcMain.handle('mobile:getRelayServerToken', async () => {
+    const info = rpcServer.getRelayPairingInfo()
+    if (!info.available) {
+      return { available: false as const }
+    }
+    // Why: the QR encodes ONLY the out-of-band E2EE identity (public key +
+    // device token). Relay coordinates reach the phone via the mobileToken it
+    // already holds, so the relay never sees the desktop's key.
+    const qrPayload = JSON.stringify({
+      v: 1,
+      publicKeyB64: info.publicKeyB64,
+      deviceToken: info.deviceToken
+    })
+    const qrDataUrl = await QRCode.toDataURL(qrPayload, {
+      errorCorrectionLevel: 'M',
+      margin: 2,
+      width: 256
+    })
+    return {
+      available: true as const,
+      qrDataUrl,
+      publicKeyB64: info.publicKeyB64,
+      deviceToken: info.deviceToken,
+      roomId: info.roomId
+    }
+  })
 }

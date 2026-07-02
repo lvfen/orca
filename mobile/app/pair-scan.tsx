@@ -108,15 +108,8 @@ export default function PairScanScreen() {
 
   const handleCameraLayout = useCallback((event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout
-    const nextBounds = {
-      width: Math.round(width),
-      height: Math.round(height)
-    }
-    setCameraBounds((currentBounds) =>
-      currentBounds.width === nextBounds.width && currentBounds.height === nextBounds.height
-        ? currentBounds
-        : nextBounds
-    )
+    const next = { width: Math.round(width), height: Math.round(height) }
+    setCameraBounds((cur) => (cur.width === next.width && cur.height === next.height ? cur : next))
   }, [])
 
   async function testAndSave(offer: PairingOffer) {
@@ -201,7 +194,8 @@ export default function PairScanScreen() {
         endpoint: offer.endpoint,
         deviceToken: offer.deviceToken,
         publicKeyB64: offer.publicKeyB64,
-        lastConnected: Date.now()
+        lastConnected: Date.now(),
+        kind: 'lan'
       })
       if (!mountedRef.current) {
         return

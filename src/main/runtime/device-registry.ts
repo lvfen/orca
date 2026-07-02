@@ -9,7 +9,14 @@ import { hardenExistingSecureFile, writeSecureJsonFile } from '../../shared/secu
 
 const DEVICE_REGISTRY_FILENAME = 'orca-devices.json'
 
-export type DeviceScope = 'mobile' | 'runtime'
+function normalizeScope(scope: unknown): DeviceScope {
+  return scope === 'runtime' || scope === 'relay' ? scope : 'mobile'
+}
+
+// Why: 'relay' is a mobile client that reaches the runtime through the relay
+// bridge instead of the LAN. It shares the mobile RPC allowlist but is tracked
+// separately so it can be revoked without touching LAN-paired phones.
+export type DeviceScope = 'mobile' | 'runtime' | 'relay'
 
 export type DeviceEntry = {
   deviceId: string
@@ -110,7 +117,7 @@ export class DeviceRegistry {
         ...device,
         // Why: older registries only existed for phone pairing. Treat missing
         // scope as mobile so legacy device tokens do not gain new CLI powers.
-        scope: device.scope === 'runtime' ? 'runtime' : 'mobile'
+        scope: normalizeScope(device.scope)
       }))
     } catch {
       this.devices = []

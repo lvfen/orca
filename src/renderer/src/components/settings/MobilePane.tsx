@@ -11,6 +11,8 @@ import { MobileNetworkInterfaceSection } from './MobileNetworkInterfaceSection'
 import { MobilePairingQrSection } from './MobilePairingQrSection'
 import { MobilePairedDevicesSection, type PairedDevice } from './MobilePairedDevicesSection'
 import { MobileAutoRestoreFitSection } from './MobileAutoRestoreFitSection'
+import { MobileRelaySection } from './MobileRelaySection'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
 import { translate } from '@/i18n/i18n'
 export { getMobilePaneSearchEntries } from './mobile-pane-search'
 
@@ -160,33 +162,53 @@ export function MobilePane(): React.JSX.Element {
 
   return (
     <div className="space-y-6">
-      <MobileNetworkInterfaceSection
-        networkInterfaces={networkInterfaces}
-        selectedAddress={selectedAddress}
-        onSelectedAddressChange={setSelectedAddress}
-        refreshingNetworkInterfaces={refreshingNetworkInterfaces}
-        onRefreshNetworkInterfaces={() => void loadNetworkInterfaces({ notifyOnError: true })}
-        loading={loading}
-        hasQrCode={qrDataUrl != null}
-        onGenerateQr={() => void generateQR({ rotate: qrDataUrl != null })}
-      />
+      {/* Why: two outbound paths to the phone — a direct LAN/tailnet WebSocket vs
+          a self-hosted relay (Goal 1). They share device/E2EE identity but need
+          different setup flows, so a segmented switch keeps each self-contained. */}
+      <Tabs defaultValue="lan">
+        <TabsList>
+          <TabsTrigger value="lan">
+            {translate('auto.components.settings.MobilePane.tabLan', 'LAN WebSocket')}
+          </TabsTrigger>
+          <TabsTrigger value="relay">
+            {translate('auto.components.settings.MobilePane.tabRelay', 'Server Token')}
+          </TabsTrigger>
+        </TabsList>
 
-      <MobilePairingQrSection
-        qrDataUrl={qrDataUrl}
-        pairingUrl={pairingUrl}
-        endpoint={endpoint}
-        qrEnlarged={qrEnlarged}
-        codeCopied={codeCopied}
-        onQrEnlargedChange={setQrEnlarged}
-        onCodeCopiedChange={setCodeCopied}
-        onClearCodeCopiedTimer={clearCodeCopiedResetTimer}
-      />
+        <TabsContent value="lan" className="space-y-6">
+          <MobileNetworkInterfaceSection
+            networkInterfaces={networkInterfaces}
+            selectedAddress={selectedAddress}
+            onSelectedAddressChange={setSelectedAddress}
+            refreshingNetworkInterfaces={refreshingNetworkInterfaces}
+            onRefreshNetworkInterfaces={() => void loadNetworkInterfaces({ notifyOnError: true })}
+            loading={loading}
+            hasQrCode={qrDataUrl != null}
+            onGenerateQr={() => void generateQR({ rotate: qrDataUrl != null })}
+          />
 
-      <MobilePairedDevicesSection
-        devices={devices}
-        hasQrCode={qrDataUrl != null}
-        onRevokeDevice={(deviceId) => void revokeDevice(deviceId)}
-      />
+          <MobilePairingQrSection
+            qrDataUrl={qrDataUrl}
+            pairingUrl={pairingUrl}
+            endpoint={endpoint}
+            qrEnlarged={qrEnlarged}
+            codeCopied={codeCopied}
+            onQrEnlargedChange={setQrEnlarged}
+            onCodeCopiedChange={setCodeCopied}
+            onClearCodeCopiedTimer={clearCodeCopiedResetTimer}
+          />
+
+          <MobilePairedDevicesSection
+            devices={devices}
+            hasQrCode={qrDataUrl != null}
+            onRevokeDevice={(deviceId) => void revokeDevice(deviceId)}
+          />
+        </TabsContent>
+
+        <TabsContent value="relay">
+          <MobileRelaySection />
+        </TabsContent>
+      </Tabs>
 
       <MobileAutoRestoreFitSection
         autoRestoreFitMs={autoRestoreFitMs}

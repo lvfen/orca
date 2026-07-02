@@ -145,7 +145,16 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
 
       let client: RpcClient
       try {
-        client = connect(host.endpoint, host.deviceToken, host.publicKeyB64)
+        client = connect(
+          host.endpoint,
+          host.deviceToken,
+          host.publicKeyB64,
+          // Why: relay hosts dial the relay URL (host.endpoint) and run the
+          // client-join pre-handshake; the mobileToken authorizes the room.
+          host.kind === 'relay' && host.mobileToken
+            ? { relay: { mobileToken: host.mobileToken } }
+            : undefined
+        )
       } catch {
         // Why: connect() can throw synchronously if the public key is
         // malformed or the endpoint URL is invalid. Notify so the UI

@@ -34,6 +34,7 @@ import { resolveConsent } from './telemetry/consent'
 import { triggerStartupNotificationRegistration } from './ipc/notifications'
 import { OrcaRuntimeService } from './runtime/orca-runtime'
 import { OrcaRuntimeRpcServer } from './runtime/runtime-rpc'
+import { loadRelayPcToken } from './runtime/relay-config-store'
 import { awaitRuntimeFileWatcherUnsubscribes } from './runtime/orca-runtime-files'
 import { clearRuntimeMetadataIfOwned } from './runtime/runtime-metadata'
 import { ensureMainI18n, setMainUiLanguage } from './i18n/main-i18n'
@@ -1624,6 +1625,10 @@ app.whenReady().then(async () => {
     app.exit(1)
     return
   }
+  // Why: a previously-configured relay bridge token must redial automatically on
+  // launch so a remote phone reconnects without the user re-pasting it. E2E runs
+  // skip it to keep test instances isolated from any developer relay config.
+  const persistedRelayPcToken = isE2E ? null : loadRelayPcToken(app.getPath('userData'))
   runtimeRpc = new OrcaRuntimeRpcServer({
     runtime,
     userDataPath: app.getPath('userData'),
@@ -1631,6 +1636,7 @@ app.whenReady().then(async () => {
     ...(isE2E ? { wsPort: 0 } : {}),
     ...(devWsPort !== undefined ? { wsPort: devWsPort } : {}),
     ...(serveOptions?.wsPort !== undefined ? { wsPort: serveOptions.wsPort } : {}),
+    ...(persistedRelayPcToken ? { relayPcToken: persistedRelayPcToken } : {}),
     webClientRoot: getBundledWebClientRoot()
   })
   registerMobileHandlers(runtimeRpc)
