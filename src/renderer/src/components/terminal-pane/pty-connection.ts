@@ -2,7 +2,7 @@
 import type { PaneManager, ManagedPane } from '@/lib/pane-manager/pane-manager'
 import type { ManagedPaneInternal } from '@/lib/pane-manager/pane-manager-types'
 import type { IBuffer, IDisposable } from '@xterm/xterm'
-import { viewportShowsCursorAgentScreen } from '@/lib/pane-manager/terminal-ime-anchor'
+import { resolveCursorAgentImeAnchor } from '@/lib/pane-manager/terminal-ime-anchor'
 import {
   detectAgentStatusFromTitle,
   isGeminiTerminalTitle,
@@ -230,23 +230,35 @@ type TerminalWithInspectableBuffer = {
   }
 }
 
-// Why: replay bytes can carry a dead run's screen in scrollback; once xterm
-// has parsed the replay, the visible screen is the ground truth for whether a
-// cursor-agent UI is actually foreground. Shape-only (header + input row) so a
-// live agent whose cursor happens to sit at the caret is not misjudged.
-// Returns null when the buffer is not inspectable (e.g. test doubles).
-function parsedViewportShowsCursorAgentScreen(
+// Why: replay bytes can carry a dead run's screen in scrollback — or still
+// painted in the viewport with a shell prompt below it — so once xterm has
+// parsed the replay the confirmation needs both the cursor-agent screen shape
+// AND the parked cursor. A dead screen leaves the shell cursor after its
+// prompt; a live agent that needs the focus-in is by definition parked, and a
+// live agent that is not parked only loses focus reporting the way the
+// pre-fix reattach always did. Returns null when the buffer is not
+// inspectable (e.g. test doubles).
+function parsedViewportShowsParkedCursorAgentScreen(
   terminal: TerminalWithInspectableBuffer
 ): boolean | null {
   const buffer = terminal.buffer?.active
-  if (!buffer || typeof buffer.getLine !== 'function') {
+  if (
+    !buffer ||
+    typeof buffer.getLine !== 'function' ||
+    typeof buffer.cursorX !== 'number' ||
+    typeof buffer.cursorY !== 'number'
+  ) {
     return null
   }
-  return viewportShowsCursorAgentScreen({
-    buffer,
-    rows: terminal.rows,
-    cols: terminal.cols
-  })
+  return (
+    resolveCursorAgentImeAnchor({
+      buffer,
+      rows: terminal.rows,
+      cols: terminal.cols,
+      cursorX: buffer.cursorX,
+      cursorY: buffer.cursorY
+    }) !== null
+  )
 }
 
 function terminalHasFocusReportingEnabled(terminal: TerminalWithFocusMode): boolean {
@@ -3507,15 +3519,16 @@ export function connectPanePty(
         if (scheduledGeneration !== reattachReplayPayloadSignalGeneration) {
           return
         }
-        // Why: the replay-byte signal also matches a dead run's screen sitting
-        // in scrollback. The parsed viewport is the ground truth; when it shows
-        // no cursor-agent screen and no status/title corroborates, downgrade to
+        // Why: the replay-byte signal also matches a dead run's screen — in
+        // scrollback or still painted above a fresh shell prompt. The parsed
+        // viewport is the ground truth; unless it shows a parked-cursor
+        // cursor-agent screen and no status/title corroborates, downgrade to
         // the plain-shell behavior (drop focus reporting, skip focus-in).
         if (
           !hasLiveAgentReattachStatusOrTitleSignal() &&
           reattachReplayPayloadHasCursorAgentSignal
         ) {
-          if (parsedViewportShowsCursorAgentScreen(pane.terminal) === false) {
+          if (parsedViewportShowsParkedCursorAgentScreen(pane.terminal) === false) {
             reattachReplayPayloadHasCursorAgentSignal = false
             writeReplayData(FOCUS_REPORTING_DISABLE_SEQUENCE)
             return

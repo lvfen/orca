@@ -24,18 +24,6 @@ export function resolveCursorAgentImeAnchor(args: {
   return findCursorAgentScreenInputAnchor(args)
 }
 
-/**
- * Whether the visible screen has the Cursor Agent shape (header near the top
- * plus an input row), independent of where the cursor currently sits.
- */
-export function viewportShowsCursorAgentScreen(args: {
-  buffer: IBuffer
-  rows: number
-  cols: number
-}): boolean {
-  return findCursorAgentScreenInputAnchor(args) !== null
-}
-
 function findCursorAgentScreenInputAnchor(args: {
   buffer: IBuffer
   rows: number
