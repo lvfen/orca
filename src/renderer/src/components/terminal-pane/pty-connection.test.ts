@@ -8579,6 +8579,45 @@ describe('connectPanePty', () => {
     disposable.dispose()
   })
 
+  it('downgrades a scrollback-only Cursor Agent signal when the parsed viewport shows a shell', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    enableActiveRuntimeEnvironment()
+    const transport = createMockTransport('remote:env-1@@terminal-1')
+    const capturedReplayCallback: {
+      current: ((data: string, meta?: { clearBeforeReplay?: boolean }) => void) | null
+    } = { current: null }
+    transport.connect.mockImplementation(async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
+      capturedReplayCallback.current = callbacks.onReplayData ?? null
+      return { id: 'remote:env-1@@terminal-1', replay: '' }
+    })
+    transportFactoryQueue.push(transport)
+    setReattachPaneTitle('renamed shell')
+
+    const pane = createPane(1)
+    // Why: an inspectable buffer whose cursor sits mid-prompt models a shell
+    // foreground after a dead cursor-agent run left its screen in scrollback.
+    Object.assign(pane.terminal.buffer.active, {
+      cursorX: 2,
+      getLine: () => undefined
+    })
+    const textarea = {} as HTMLTextAreaElement
+    configureTerminalFocusMode(pane, textarea)
+    const manager = createManager(1)
+    const deps = createDeps()
+    const disposable = await withMockedDocumentActiveElement(textarea, async () => {
+      const connection = connectPanePty(pane as never, manager as never, deps as never)
+      await flushAsyncTicks(6)
+
+      capturedReplayCallback.current?.(ANSI_POSITIONED_CURSOR_AGENT_REATTACH_SCREEN)
+      await flushAsyncTicks(12)
+
+      expect(pane.terminal.write).toHaveBeenCalledWith('\x1b[?1004l', expect.any(Function))
+      expect(transport.sendInput).not.toHaveBeenCalledWith('\x1b[I')
+      return connection
+    })
+    disposable.dispose()
+  })
+
   it('does not clear restored scrollback when eager metadata replay opts out', async () => {
     const { connectPanePty } = await import('./pty-connection')
     const transport = createMockTransport('pty-id')
