@@ -757,7 +757,10 @@ describe('connectPanePty', () => {
         agentStatus: {
           inferInterrupt: vi.fn().mockResolvedValue(false)
         }
-      }
+      },
+      dispatchEvent: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn()
     }
     globalThis.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
       callback(0)
