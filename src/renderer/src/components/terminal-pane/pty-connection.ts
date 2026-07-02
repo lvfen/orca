@@ -1306,7 +1306,10 @@ export function connectPanePty(
     return title.trim().toLowerCase() === CURSOR_AGENT_REATTACH_HEADER.toLowerCase()
   }
   const hasLiveAgentReattachSignal = (): boolean => {
-    if (useAppStore.getState().agentStatusByPaneKey[cacheKey] || getAuthoritativePaneAgent()) {
+    // Why: launch ownership (tab.launchAgent) never decays after the agent
+    // exits, so it must not count as liveness here — only live status, live
+    // titles, and the replayed screen shape do.
+    if (useAppStore.getState().agentStatusByPaneKey[cacheKey]) {
       return true
     }
     const title = getCurrentTerminalTitle() ?? ''
@@ -3498,7 +3501,9 @@ export function connectPanePty(
         if (clearBeforeReplay) {
           await writeReplayDataAsync('\x1b[2J\x1b[3J\x1b[H')
         }
-        if (data.length > 0) {
+        if (clearBeforeReplay || data.length > 0) {
+          // Why: an empty clearing frame is still an authoritative repaint and
+          // must clear a stale agent signal from an earlier payload.
           rememberReattachPayloadAgentSignal(data, { fullScreenReplay: clearBeforeReplay })
         }
         await writeReplayDataAsync(data)

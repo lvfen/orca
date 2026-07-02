@@ -118,6 +118,28 @@ describe('resolveCursorAgentImeAnchor', () => {
     ).toBeNull()
   })
 
+  it('anchors the input row, not a transcript line containing an arrow', () => {
+    const buffer = makeBuffer([
+      '',
+      '  Cursor Agent',
+      '',
+      '  Renamed a.ts → b.ts',
+      '',
+      '  → Plan, search, build anything',
+      ''
+    ])
+
+    expect(
+      resolveCursorAgentImeAnchor({
+        buffer,
+        rows: 7,
+        cols: 80,
+        cursorX: 0,
+        cursorY: 6
+      })
+    ).toEqual({ row: 5, column: 4 })
+  })
+
   it('uses cell width when anchoring after typed Cursor Agent input', () => {
     const buffer = makeBuffer(['', '  Cursor Agent', '', '  → hi你', ''])
 

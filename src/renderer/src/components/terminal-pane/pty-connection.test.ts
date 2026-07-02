@@ -4223,6 +4223,54 @@ describe('connectPanePty', () => {
     })
   })
 
+  it('does not treat persisted tab launchAgent metadata as a live agent reattach', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    const transport = createMockTransport()
+    transport.connect.mockImplementation(async ({ sessionId }: { sessionId?: string }) => {
+      if (sessionId) {
+        return { id: sessionId, snapshot: '\x1b[?1004h\x1b[?25lstale shell snapshot' }
+      }
+      return null
+    })
+    transportFactoryQueue.push(transport)
+    // Why: launchAgent is launch ownership metadata that never decays after
+    // the agent exits; it must not preserve stale modes for the shell left
+    // behind after an unclean agent death.
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: {
+        'wt-1': [{ id: 'tab-1', ptyId: 'tab-pty', title: 'zsh', launchAgent: 'claude' }]
+      },
+      runtimePaneTitlesByTabId: {
+        'tab-1': { 1: 'zsh' }
+      }
+    } as StoreState
+
+    const pane = createPane(1)
+    const textarea = {} as HTMLTextAreaElement
+    configureTerminalFocusMode(pane, textarea)
+    await withMockedDocumentActiveElement(textarea, async () => {
+      const manager = createManager(1)
+      const deps = createDeps({
+        restoredLeafId: LEAF_1,
+        restoredPtyIdByLeafId: { [LEAF_1]: 'tab-pty' }
+      })
+
+      connectPanePty(pane as never, manager as never, deps as never)
+      await flushAsyncTicks(20)
+
+      expect(transport.sendInput).not.toHaveBeenCalledWith('\x1b[I')
+      expect(pane.terminal.write).toHaveBeenCalledWith(
+        POST_REPLAY_REATTACH_RESET,
+        expect.any(Function)
+      )
+      expect(pane.terminal.write).not.toHaveBeenCalledWith(
+        POST_REPLAY_LIVE_AGENT_REATTACH_RESET,
+        expect.any(Function)
+      )
+    })
+  })
+
   it('does not treat an agent-name token in a shell title as a live agent reattach', async () => {
     const { connectPanePty } = await import('./pty-connection')
     const transport = createMockTransport()

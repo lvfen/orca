@@ -25,7 +25,9 @@ export function resolveCursorAgentImeAnchor(args: {
     return null
   }
 
-  for (let row = 0; row < args.rows; row++) {
+  // Why: the input box sits below the transcript, so scan bottom-up — a
+  // transcript line containing "→ " (e.g. a rename diff) must not win.
+  for (let row = args.rows - 1; row >= 0; row--) {
     const line = getVisibleLine(args.buffer, row)
     if (!line) {
       continue
