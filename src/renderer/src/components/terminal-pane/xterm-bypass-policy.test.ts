@@ -164,6 +164,8 @@ describe('shouldBypassXtermKeyboardEvent — macOS', () => {
 })
 
 describe('shouldSuppressTerminalImeKeyboardEvent — macOS', () => {
+  const macImeOpts = { isMac: true }
+
   it('suppresses keyboard events while Chromium reports active IME composition', () => {
     expect(
       shouldSuppressTerminalImeKeyboardEvent(
@@ -174,14 +176,18 @@ describe('shouldSuppressTerminalImeKeyboardEvent — macOS', () => {
 
   it('lets standalone Process keys reach xterm so its CompositionHelper can diff text', () => {
     expect(
-      shouldSuppressTerminalImeKeyboardEvent(event({ key: 'Process', code: 'KeyN', keyCode: 229 }))
+      shouldSuppressTerminalImeKeyboardEvent(
+        event({ key: 'Process', code: 'KeyN', keyCode: 229 }),
+        macImeOpts
+      )
     ).toBe(false)
   })
 
   it('suppresses standalone Process keyups so kitty release reporting cannot leak', () => {
     expect(
       shouldSuppressTerminalImeKeyboardEvent(
-        event({ type: 'keyup', key: 'Process', code: 'KeyN', keyCode: 229 })
+        event({ type: 'keyup', key: 'Process', code: 'KeyN', keyCode: 229 }),
+        macImeOpts
       )
     ).toBe(true)
   })
@@ -190,7 +196,7 @@ describe('shouldSuppressTerminalImeKeyboardEvent — macOS', () => {
     expect(
       shouldSuppressTerminalImeKeyboardEvent(
         event({ key: 'Process', code: 'KeyN', keyCode: 229 }),
-        { compositionActive: true }
+        { ...macImeOpts, compositionActive: true }
       )
     ).toBe(true)
   })

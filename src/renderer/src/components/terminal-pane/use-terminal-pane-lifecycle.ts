@@ -890,7 +890,8 @@ export function useTerminalPaneLifecycle({
             })
           }
           const suppressImeKey = shouldSuppressTerminalImeKeyboardEvent(e, {
-            compositionActive
+            compositionActive,
+            isMac
           })
           if (suppressImeKey) {
             logTerminalImeDiagnostic('xterm-key-suppressed-ime', {
