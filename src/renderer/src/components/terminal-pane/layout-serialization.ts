@@ -76,11 +76,13 @@ export const POST_REPLAY_LIVE_SNAPSHOT_RESET = `${RESET_TERMINAL_CURSOR_STYLE}\x
 //              can make the next Ctrl+C encode as CSI-u after reattach.
 export const POST_REPLAY_REATTACH_RESET = `${RESET_TERMINAL_CURSOR_STYLE}${RESET_KITTY_KEYBOARD_PROTOCOL}\x1b[?25h\x1b[?1004l`
 
-// Why: a live agent TUI legitimately owns focus reporting and cursor
-// visibility. Resetting those modes during reattach can leave the agent's real
-// cursor parked away from its input caret, which anchors IME composition to the
-// wrong cell until the agent receives focus-in.
-export const POST_REPLAY_LIVE_AGENT_REATTACH_RESET = `${RESET_TERMINAL_CURSOR_STYLE}${RESET_KITTY_KEYBOARD_PROTOCOL}`
+// Why: a live agent TUI legitimately owns focus reporting; resetting `?1004h`
+// would suppress the post-reattach focus-in the agent needs to move its real
+// cursor back to the input caret (the IME anchor). Cursor visibility is still
+// reset: agent detection can false-positive on a dead TUI's leftovers, and a
+// permanently invisible shell cursor is far worse than the brief flash a live
+// agent re-hides on its post-reattach SIGWINCH repaint.
+export const POST_REPLAY_LIVE_AGENT_REATTACH_RESET = `${RESET_TERMINAL_CURSOR_STYLE}${RESET_KITTY_KEYBOARD_PROTOCOL}\x1b[?25h`
 
 // Cross-platform monospace fallback chain ensures the terminal always has a
 // usable font regardless of OS.  macOS-only fonts like SF Mono and Menlo are

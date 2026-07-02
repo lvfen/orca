@@ -230,7 +230,7 @@ describe('terminal replay state reset', () => {
     }
   })
 
-  it('preserves hidden cursor visibility after live agent reattach replay', async () => {
+  it('resets hidden cursor visibility after live agent reattach replay', async () => {
     const term = new Terminal({
       cols: 80,
       rows: 24,
@@ -243,9 +243,10 @@ describe('terminal replay state reset', () => {
 
       await writeTerminal(term, POST_REPLAY_LIVE_AGENT_REATTACH_RESET)
 
-      // Why: live agent TUIs often park the real terminal cursor off-input and
-      // hide it while drawing their own input caret. Reattach must not reveal it.
-      expect(readCursorHidden(term)).toBe(true)
+      // Why: agent detection can false-positive on a dead TUI's leftovers, so
+      // even the live-agent reset must not leave a shell cursor permanently
+      // invisible; a live agent re-hides it on the post-reattach repaint.
+      expect(readCursorHidden(term)).toBe(false)
     } finally {
       term.dispose()
     }

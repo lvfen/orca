@@ -4,7 +4,6 @@ import type { ManagedPaneInternal } from '@/lib/pane-manager/pane-manager-types'
 import type { IDisposable } from '@xterm/xterm'
 import {
   detectAgentStatusFromTitle,
-  getAgentLabel,
   isGeminiTerminalTitle,
   isClaudeAgent
 } from '@/lib/agent-status'
@@ -259,7 +258,9 @@ const CURSOR_AGENT_REATTACH_SCREEN_SIGNAL_MAX_CHARS = 5000
 
 function hasCursorAgentReattachPayloadScreenSignal(data: string): boolean {
   const normalized = stripAnsiCsiSequences(data)
-  const headerIndex = normalized.indexOf(CURSOR_AGENT_REATTACH_HEADER)
+  // Why: anchor on the LAST header occurrence — replay buffers keep scrollback,
+  // and an earlier finished run must not classify the current screen.
+  const headerIndex = normalized.lastIndexOf(CURSOR_AGENT_REATTACH_HEADER)
   if (headerIndex === -1) {
     return false
   }
@@ -1287,19 +1288,34 @@ export function connectPanePty(
     return runtimeTitle ?? tabTitle ?? null
   }
   let reattachReplayPayloadHasCursorAgentSignal = false
-  const rememberReattachPayloadAgentSignal = (data: string): void => {
+  const rememberReattachPayloadAgentSignal = (
+    data: string,
+    opts: { fullScreenReplay: boolean }
+  ): void => {
     // Why: ordinary scrollback can mention agent names. Treat replay bytes as
     // a live Cursor Agent signal only when they look like its restored screen.
-    reattachReplayPayloadHasCursorAgentSignal = hasCursorAgentReattachPayloadScreenSignal(data)
+    const signal = hasCursorAgentReattachPayloadScreenSignal(data)
+    // Why: incremental (non-clearing) replay frames repaint only part of the
+    // screen, so their bytes can only add evidence — a full-screen replay is
+    // the authoritative repaint that may clear the flag.
+    reattachReplayPayloadHasCursorAgentSignal = opts.fullScreenReplay
+      ? signal
+      : reattachReplayPayloadHasCursorAgentSignal || signal
+  }
+  const isCursorAgentNativeTitle = (title: string): boolean => {
+    return title.trim().toLowerCase() === CURSOR_AGENT_REATTACH_HEADER.toLowerCase()
   }
   const hasLiveAgentReattachSignal = (): boolean => {
     if (useAppStore.getState().agentStatusByPaneKey[cacheKey] || getAuthoritativePaneAgent()) {
       return true
     }
     const title = getCurrentTerminalTitle() ?? ''
+    // Why: broad token matching (getAgentLabel) fires on titles like
+    // "ssh devin@host"; that surface is too loose to gate mode preservation
+    // and PTY byte injection, so only exact/status titles count here.
     return (
       detectAgentStatusFromTitle(title) !== null ||
-      getAgentLabel(title) !== null ||
+      isCursorAgentNativeTitle(title) ||
       reattachReplayPayloadHasCursorAgentSignal
     )
   }
@@ -3483,7 +3499,7 @@ export function connectPanePty(
           await writeReplayDataAsync('\x1b[2J\x1b[3J\x1b[H')
         }
         if (data.length > 0) {
-          rememberReattachPayloadAgentSignal(data)
+          rememberReattachPayloadAgentSignal(data, { fullScreenReplay: clearBeforeReplay })
         }
         await writeReplayDataAsync(data)
         if (clearBeforeReplay || data.length > 0) {
@@ -4666,7 +4682,7 @@ export function connectPanePty(
       // the daemon and relay are by definition tracking the same session
       // and only the freshest source belongs on screen.
       if (connectResult?.snapshot) {
-        rememberReattachPayloadAgentSignal(connectResult.snapshot)
+        rememberReattachPayloadAgentSignal(connectResult.snapshot, { fullScreenReplay: true })
         writeReplayData('\x1b[2J\x1b[3J\x1b[H')
         writeReplayData(connectResult.snapshot)
         // Snapshot reattach keeps a live session, so avoid the broader mode
@@ -4682,7 +4698,7 @@ export function connectPanePty(
           }
         }
       } else if (connectResult?.replay) {
-        rememberReattachPayloadAgentSignal(connectResult.replay)
+        rememberReattachPayloadAgentSignal(connectResult.replay, { fullScreenReplay: true })
         // Relay replay holds the last 100 KB of raw output. The xterm may
         // already hold pre-disconnect content; clear first to avoid
         // duplication. The reattach reset clears renderer-owned state without
