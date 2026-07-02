@@ -172,9 +172,26 @@ describe('shouldSuppressTerminalImeKeyboardEvent — macOS', () => {
     ).toBe(true)
   })
 
-  it('suppresses Windows IME Process keys', () => {
+  it('lets standalone Process keys reach xterm so its CompositionHelper can diff text', () => {
     expect(
       shouldSuppressTerminalImeKeyboardEvent(event({ key: 'Process', code: 'KeyN', keyCode: 229 }))
+    ).toBe(false)
+  })
+
+  it('suppresses standalone Process keyups so kitty release reporting cannot leak', () => {
+    expect(
+      shouldSuppressTerminalImeKeyboardEvent(
+        event({ type: 'keyup', key: 'Process', code: 'KeyN', keyCode: 229 })
+      )
+    ).toBe(true)
+  })
+
+  it('suppresses Process keys while the terminal composition tracker is active', () => {
+    expect(
+      shouldSuppressTerminalImeKeyboardEvent(
+        event({ key: 'Process', code: 'KeyN', keyCode: 229 }),
+        { compositionActive: true }
+      )
     ).toBe(true)
   })
 

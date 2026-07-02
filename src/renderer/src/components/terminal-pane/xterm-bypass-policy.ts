@@ -77,9 +77,15 @@ export function shouldSuppressTerminalImeKeyboardEvent(
   // Why: IMEs own Process-key / composing keystrokes. Letting xterm translate
   // Backspace/Enter/etc. into PTY bytes makes TUIs delete committed CJK text
   // while the user is only editing the preedit candidate.
+  //
+  // A bare keydown 229 outside active composition must still reach xterm's
+  // CompositionHelper. It diffs the helper textarea after the browser commits
+  // native text, which is how macOS IMEs deliver the first ASCII key after an
+  // input-mode switch. The matching keyup is still suppressed so kitty release
+  // reporting cannot leak a Process-key sequence.
   return (
     event.isComposing === true ||
-    event.keyCode === 229 ||
+    (event.keyCode === 229 && (event.type !== 'keydown' || options.compositionActive)) ||
     (options.compositionActive && TERMINAL_IME_OWNED_KEYS.has(event.key))
   )
 }

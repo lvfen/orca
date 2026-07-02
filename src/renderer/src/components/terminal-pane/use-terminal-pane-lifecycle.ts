@@ -3,6 +3,11 @@ import { useEffect, useRef } from 'react'
 import type { IDisposable, Terminal } from '@xterm/xterm'
 import type { ParsedAgentStatusPayload } from '../../../../shared/agent-status-types'
 import { PaneManager } from '@/lib/pane-manager/pane-manager'
+import {
+  logTerminalImeDiagnostic,
+  summarizeElement,
+  summarizeKeyboardEvent
+} from '@/lib/terminal-ime-diagnostics'
 import { consumePendingWebRuntimeSplitMirrorTelemetry } from '@/runtime/web-runtime-session'
 import {
   normalizeTerminalFastScrollSensitivity,
@@ -836,6 +841,17 @@ export function useTerminalPaneLifecycle({
         const macNativeTextInputSourceTracker = isMac ? getMacNativeTextInputSourceTracker() : null
         const imeCompositionTracker = installTerminalImeCompositionTracker(pane.terminal.element)
         imeCompositionDisposablesRef.current.set(pane.id, imeCompositionTracker)
+        const getImeInputSourceFeatures = () =>
+          macNativeTextInputSourceTracker?.getFeatures() ??
+          DISABLED_MAC_NATIVE_TEXT_INPUT_SOURCE_FEATURES
+        logTerminalImeDiagnostic('pane-ime-installed', {
+          tabId,
+          paneId: pane.id,
+          leafId: pane.leafId,
+          isMac,
+          features: getImeInputSourceFeatures(),
+          target: summarizeElement(pane.terminal.element)
+        })
         // Why: only known macOS native text paths need xterm keydown bypass.
         // Source gates cover physical CJK/Vietnamese IME rewrites; synthetic
         // Unicode key events are detected by missing physical key identity.
@@ -844,9 +860,7 @@ export function useTerminalPaneLifecycle({
               terminalElement: pane.terminal.element,
               isComposing: () => imeCompositionTracker.isActive(),
               sendInput: (data) => pane.terminal.input(data),
-              getInputSourceFeatures: () =>
-                macNativeTextInputSourceTracker?.getFeatures() ??
-                DISABLED_MAC_NATIVE_TEXT_INPUT_SOURCE_FEATURES
+              getInputSourceFeatures: getImeInputSourceFeatures
             })
           : {
               claimKeyEvent: () => false,
@@ -854,11 +868,40 @@ export function useTerminalPaneLifecycle({
             }
         imeNativeTextForwarderDisposablesRef.current.set(pane.id, imeNativeTextForwarder)
         pane.terminal.attachCustomKeyEventHandler((e) => {
+          const compositionActive = imeCompositionTracker.isActive()
+          const inputSourceFeatures = getImeInputSourceFeatures()
           if (
-            shouldSuppressTerminalImeKeyboardEvent(e, {
-              compositionActive: imeCompositionTracker.isActive()
-            })
+            e.type === 'keydown' &&
+            (e.isComposing === true ||
+              e.keyCode === 229 ||
+              e.key === 'Process' ||
+              Array.from(e.key).length === 1 ||
+              inputSourceFeatures.forwardAsciiPunctuation ||
+              inputSourceFeatures.forwardShortTextReplacements)
           ) {
+            logTerminalImeDiagnostic('xterm-keydown-enter', {
+              tabId,
+              paneId: pane.id,
+              leafId: pane.leafId,
+              event: summarizeKeyboardEvent(e),
+              compositionActive,
+              inputSourceFeatures,
+              target: summarizeElement(e.target)
+            })
+          }
+          const suppressImeKey = shouldSuppressTerminalImeKeyboardEvent(e, {
+            compositionActive
+          })
+          if (suppressImeKey) {
+            logTerminalImeDiagnostic('xterm-key-suppressed-ime', {
+              tabId,
+              paneId: pane.id,
+              leafId: pane.leafId,
+              event: summarizeKeyboardEvent(e),
+              compositionActive,
+              inputSourceFeatures,
+              target: summarizeElement(e.target)
+            })
             return false
           }
           if (pendingTerminalInterruptKeyup && shouldSuppressTerminalInterruptKeyup(e)) {
@@ -912,16 +955,48 @@ export function useTerminalPaneLifecycle({
             }
           }
 
-          if (imeNativeTextForwarder.claimKeyEvent(e)) {
+          const imeNativeTextClaimed = imeNativeTextForwarder.claimKeyEvent(e)
+          if (imeNativeTextClaimed) {
             // Why: bypass xterm's kitty encoder for native text keydowns so the
             // committed glyph survives via the input event.
+            logTerminalImeDiagnostic('xterm-key-native-forwarder-claimed', {
+              tabId,
+              paneId: pane.id,
+              leafId: pane.leafId,
+              event: summarizeKeyboardEvent(e),
+              compositionActive,
+              inputSourceFeatures,
+              target: summarizeElement(e.target)
+            })
             return false
           }
 
-          return !shouldBypassXtermKeyboardEvent(e, {
+          const bypassXterm = shouldBypassXtermKeyboardEvent(e, {
             isMac,
             hasSelection: pane.terminal.hasSelection()
           })
+          if (
+            bypassXterm ||
+            (e.type === 'keydown' &&
+              (e.isComposing === true ||
+                e.keyCode === 229 ||
+                e.key === 'Process' ||
+                inputSourceFeatures.forwardAsciiPunctuation ||
+                inputSourceFeatures.forwardShortTextReplacements))
+          ) {
+            logTerminalImeDiagnostic('xterm-key-final-decision', {
+              tabId,
+              paneId: pane.id,
+              leafId: pane.leafId,
+              event: summarizeKeyboardEvent(e),
+              compositionActive,
+              inputSourceFeatures,
+              bypassXterm,
+              allowXterm: !bypassXterm,
+              target: summarizeElement(e.target)
+            })
+          }
+          return !bypassXterm
         })
 
         const linkProviderDisposable = pane.terminal.registerLinkProvider(
