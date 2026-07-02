@@ -253,6 +253,23 @@ function stripAnsiCsiSequences(data: string): string {
   return normalized
 }
 
+const CURSOR_AGENT_REATTACH_HEADER = 'Cursor Agent'
+const CURSOR_AGENT_REATTACH_INPUT_MARKER = '→'
+const CURSOR_AGENT_REATTACH_SCREEN_SIGNAL_MAX_CHARS = 5000
+
+function hasCursorAgentReattachPayloadScreenSignal(data: string): boolean {
+  const normalized = stripAnsiCsiSequences(data)
+  const headerIndex = normalized.indexOf(CURSOR_AGENT_REATTACH_HEADER)
+  if (headerIndex === -1) {
+    return false
+  }
+  const screenTail = normalized.slice(
+    headerIndex + CURSOR_AGENT_REATTACH_HEADER.length,
+    headerIndex + CURSOR_AGENT_REATTACH_SCREEN_SIGNAL_MAX_CHARS
+  )
+  return screenTail.includes(`${CURSOR_AGENT_REATTACH_INPUT_MARKER} `)
+}
+
 type E2eTerminalPtyDataInjectionWindow = Window & {
   __terminalPtyDataInjection?: E2eTerminalPtyDataInjectionApi
   __terminalHiddenSnapshotOverride?: E2eTerminalHiddenSnapshotOverrideApi
@@ -1269,10 +1286,11 @@ export function connectPanePty(
     )?.title
     return runtimeTitle ?? tabTitle ?? null
   }
-  let reattachReplayPayloadAgentLabel: string | null = null
+  let reattachReplayPayloadHasCursorAgentSignal = false
   const rememberReattachPayloadAgentSignal = (data: string): void => {
-    const normalized = stripAnsiCsiSequences(data)
-    reattachReplayPayloadAgentLabel = getAgentLabel(normalized)
+    // Why: ordinary scrollback can mention agent names. Treat replay bytes as
+    // a live Cursor Agent signal only when they look like its restored screen.
+    reattachReplayPayloadHasCursorAgentSignal = hasCursorAgentReattachPayloadScreenSignal(data)
   }
   const hasLiveAgentReattachSignal = (): boolean => {
     if (useAppStore.getState().agentStatusByPaneKey[cacheKey] || getAuthoritativePaneAgent()) {
@@ -1282,7 +1300,7 @@ export function connectPanePty(
     return (
       detectAgentStatusFromTitle(title) !== null ||
       getAgentLabel(title) !== null ||
-      reattachReplayPayloadAgentLabel !== null
+      reattachReplayPayloadHasCursorAgentSignal
     )
   }
   const shouldPreserveAgentReattachModes = (): boolean => {
@@ -3463,6 +3481,9 @@ export function connectPanePty(
         // can keep restored scrollback while still using the replay guard.
         if (clearBeforeReplay) {
           await writeReplayDataAsync('\x1b[2J\x1b[3J\x1b[H')
+        }
+        if (data.length > 0) {
+          rememberReattachPayloadAgentSignal(data)
         }
         await writeReplayDataAsync(data)
         if (clearBeforeReplay || data.length > 0) {
