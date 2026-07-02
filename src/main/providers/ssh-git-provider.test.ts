@@ -101,9 +101,23 @@ describe('SshGitProvider', () => {
 
     expect(mux.request).toHaveBeenCalledWith('git.submoduleStatus', {
       worktreePath: '/home/user/repo',
-      submodulePath: 'vendor/lib'
+      submodulePath: 'vendor/lib',
+      area: 'unstaged'
     })
     expect(result).toEqual(statusResult)
+  })
+
+  it('getSubmoduleStatus forwards the requested source-control area', async () => {
+    const statusResult = { entries: [], conflictOperation: 'unknown' }
+    mux.request.mockResolvedValue(statusResult)
+
+    await provider.getSubmoduleStatus('/home/user/repo', 'vendor/lib', 'staged')
+
+    expect(mux.request).toHaveBeenCalledWith('git.submoduleStatus', {
+      worktreePath: '/home/user/repo',
+      submodulePath: 'vendor/lib',
+      area: 'staged'
+    })
   })
 
   it('reports an actionable reconnect message when the relay lacks submodule status', async () => {
@@ -976,6 +990,31 @@ describe('SshGitProvider', () => {
     expect(mux.request).toHaveBeenCalledTimes(3)
   })
 
+  it('clears pending diff RPCs when submodule status runs', async () => {
+    const diff = {
+      kind: 'text',
+      originalContent: 'old',
+      modifiedContent: 'new',
+      originalIsBinary: false,
+      modifiedIsBinary: false
+    }
+    const pendingDiff = deferredValue(diff)
+    mux.request.mockReturnValueOnce(pendingDiff.promise)
+
+    const first = provider.getDiff('/home/user/repo', 'src/file.ts', false, true)
+    await waitForRequestCount(mux.request, 1)
+
+    mux.request.mockResolvedValueOnce({ entries: [], conflictOperation: 'unknown' })
+    await provider.getSubmoduleStatus('/home/user/repo', 'vendor/lib')
+
+    mux.request.mockResolvedValueOnce(diff)
+    const second = provider.getDiff('/home/user/repo', 'src/file.ts', false, true)
+
+    pendingDiff.resolve()
+    await expect(Promise.all([first, second])).resolves.toEqual([diff, diff])
+    expect(mux.request).toHaveBeenCalledTimes(3)
+  })
+
   it('clears pending diff RPCs when a mutation runs', async () => {
     const diff = {
       kind: 'text',
@@ -1289,6 +1328,38 @@ describe('SshGitProvider', () => {
       worktreePath: '/home/user/feat',
       newBranch: 'you/fix-auth'
     })
+  })
+
+  it('forceDeletePreservedBranch sends the preserved-branch delete request', async () => {
+    await provider.forceDeletePreservedBranch('/home/user/repo', 'you/fix-auth', 'abc123')
+    expect(mux.request).toHaveBeenCalledWith('git.forceDeletePreservedBranch', {
+      repoPath: '/home/user/repo',
+      branchName: 'you/fix-auth',
+      expectedHead: 'abc123'
+    })
+  })
+
+  it('forceDeletePreservedBranch maps old relays to the reconnect message', async () => {
+    const methodNotFound = Object.assign(
+      new Error('Method not found: git.forceDeletePreservedBranch'),
+      { code: -32601 }
+    )
+    mux.request.mockRejectedValueOnce(methodNotFound)
+
+    await expect(
+      provider.forceDeletePreservedBranch('/home/user/repo', 'you/fix-auth', 'abc123')
+    ).rejects.toThrow(
+      'This SSH host is running an older Orca relay that cannot delete preserved branches. Reconnect to deploy the latest relay, then try again.'
+    )
+  })
+
+  it('forceDeletePreservedBranch rethrows non-method-not-found errors', async () => {
+    const error = new Error('remote update-ref failed')
+    mux.request.mockRejectedValueOnce(error)
+
+    await expect(
+      provider.forceDeletePreservedBranch('/home/user/repo', 'you/fix-auth', 'abc123')
+    ).rejects.toBe(error)
   })
 
   it('isGitRepo always returns true for remote paths', () => {

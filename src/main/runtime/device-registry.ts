@@ -2,21 +2,18 @@
 // (mobile) connections. Each paired device gets its own revocable token so
 // compromising one device doesn't expose others. The registry is a simple
 // JSON file with hardened permissions matching the runtime metadata pattern.
-import { randomBytes, randomUUID } from 'crypto'
-import { existsSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { hardenExistingSecureFile, writeSecureJsonFile } from '../../shared/secure-file'
-
-const DEVICE_REGISTRY_FILENAME = 'orca-devices.json'
+import type { DeviceScope } from '../../shared/runtime-types'
+import { DEVICE_REGISTRY_FILENAME } from './mobile-pairing-files'
 
 function normalizeScope(scope: unknown): DeviceScope {
   return scope === 'runtime' || scope === 'relay' ? scope : 'mobile'
 }
 
-// Why: 'relay' is a mobile client that reaches the runtime through the relay
-// bridge instead of the LAN. It shares the mobile RPC allowlist but is tracked
-// separately so it can be revoked without touching LAN-paired phones.
-export type DeviceScope = 'mobile' | 'runtime' | 'relay'
+export type { DeviceScope }
 
 export type DeviceEntry = {
   deviceId: string

@@ -116,7 +116,7 @@ export const GIT_METHODS: RpcMethod[] = [
     name: 'git.submoduleStatus',
     params: GitSubmoduleStatus,
     handler: async (params, { runtime }) =>
-      runtime.getRuntimeGitSubmoduleStatus(params.worktree, params.submodulePath)
+      runtime.getRuntimeGitSubmoduleStatus(params.worktree, params.submodulePath, params.area)
   }),
   defineMethod({
     name: 'git.history',

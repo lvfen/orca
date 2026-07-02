@@ -1,7 +1,7 @@
 /* eslint-disable max-lines */
-import { existsSync } from 'fs'
-import { readFile, stat } from 'fs/promises'
-import * as path from 'path'
+import { existsSync } from 'node:fs'
+import { readFile, stat } from 'node:fs/promises'
+import * as path from 'node:path'
 import type {
   GitBranchChangeEntry,
   GitBranchChangeStatus,
@@ -21,6 +21,7 @@ import {
   getEffectiveGitUpstreamStatus,
   splitRemoteBranchName
 } from '../../shared/git-effective-upstream'
+import { createGitConfigSnapshotRunner } from '../../shared/git-config-snapshot-runner'
 import { isBinaryBuffer } from '../../shared/binary-buffer'
 import {
   applyLineStats,
@@ -72,6 +73,15 @@ const gitDiffReadDedupe = new InFlightPromiseDedupe<GitDiffResult>()
 const effectiveUpstreamStatusWriteGeneration = new Map<string, number>()
 const statusReadsInFlight = new Map<string, Promise<GitStatusResult>>()
 
+// Why: a mutation invalidates both in-flight diff reads and in-flight status
+// coalescing; clearing only the diff dedupe would let a post-mutation
+// getStatus() join a pre-mutation read and return stale entries.
+function clearGitReadInvalidationState(): void {
+  gitDiffReadDedupe.clear()
+  statusReadsInFlight.clear()
+  submodulePathsCache.clear()
+}
+
 export function clearSubmodulePathsCacheForTests(): void {
   submodulePathsCache.clear()
 }
@@ -80,15 +90,20 @@ function gitRuntimeOptionsKey(options: GitRuntimeOptions): readonly unknown[] {
   return [options.wslDistro ?? null]
 }
 
+function getSubmodulePathsCacheKey(worktreePath: string, options: GitRuntimeOptions): string {
+  // Why: the same path string can refer to different filesystem views across
+  // WSL distros, so the `.gitmodules` cache must follow runtime routing.
+  return [worktreePath, ...gitRuntimeOptionsKey(options)].join('\0')
+}
+
 // Why: status tests reuse this reset hook, so every cross-call memoization layer
 // must reset together even though the historical name mentions upstream only.
 export function clearEffectiveUpstreamStatusCacheForTests(): void {
   effectiveUpstreamStatusCache.clear()
   effectiveUpstreamStatusInFlight.clear()
   retiredEffectiveUpstreamStatusInFlight.clear()
-  gitDiffReadDedupe.clear()
   effectiveUpstreamStatusWriteGeneration.clear()
-  statusReadsInFlight.clear()
+  clearGitReadInvalidationState()
 }
 
 export function getEffectiveUpstreamStatusCacheCountForTests(): number {
@@ -117,6 +132,9 @@ export async function getStatus(
   options: GetStatusOptions = {}
 ): Promise<GitStatusResult> {
   gitDiffReadDedupe.clear()
+  if (options.signal) {
+    return runGetStatus(worktreePath, options)
+  }
   // Why: dedupe only concurrent identical reads; after settle, callers must
   // execute a fresh status read rather than observing a cached result.
   const cacheKey = getStatusReadKey(worktreePath, options)
@@ -198,6 +216,7 @@ async function runGetStatus(
       // Why: status polling is read-like; avoid refreshing the index and racing
       // terminal Git commands on `.git/worktrees/*/index.lock`.
       env: gitOptionalLocksDisabledEnv(),
+      signal: options.signal,
       onStdout: (chunk) => parser.update(chunk, limit)
     })
     if (!stoppedEarly) {
@@ -311,17 +330,20 @@ export function resolveSubmoduleWorktreePath(worktreePath: string, submodulePath
 export async function getSubmoduleStatus(
   worktreePath: string,
   submodulePath: string,
-  options: GitRuntimeOptions = {}
+  options: GitRuntimeOptions & { staged?: boolean } = {}
 ): Promise<GitStatusResult> {
   const submoduleWorktreePath = resolveSubmoduleWorktreePath(worktreePath, submodulePath)
   const workingResult = await getStatus(submoduleWorktreePath, options)
   // Why: a moved gitlink (clean worktree) has no uncommitted status rows; its
   // real changes live between the parent-recorded commit and the checked-out
   // commit. Surface those as inner rows so the expansion isn't empty.
-  const fromOid =
-    (await readGitlinkOidFromIndex(worktreePath, submodulePath, options)) ||
-    (await readGitlinkOidFromTree(worktreePath, 'HEAD', submodulePath, options))
-  const toOid = await readWorkingSubmoduleHead(submoduleWorktreePath, options)
+  const fromOid = options.staged
+    ? await readGitlinkOidFromTree(worktreePath, 'HEAD', submodulePath, options)
+    : (await readGitlinkOidFromIndex(worktreePath, submodulePath, options)) ||
+      (await readGitlinkOidFromTree(worktreePath, 'HEAD', submodulePath, options))
+  const toOid = options.staged
+    ? await readGitlinkOidFromIndex(worktreePath, submodulePath, options)
+    : await readWorkingSubmoduleHead(submoduleWorktreePath, options)
   if (fromOid && toOid && fromOid !== toOid) {
     const rangeEntries = await computeSubmoduleRangeEntries(
       submoduleWorktreePath,
@@ -329,6 +351,9 @@ export async function getSubmoduleStatus(
       toOid,
       options
     )
+    if (options.staged) {
+      return { ...workingResult, entries: rangeEntries }
+    }
     const rangePaths = new Set(rangeEntries.map((entry) => entry.path))
     // Range rows win on overlap so the diff matches getDiff's commit-range route.
     const entries = [
@@ -336,6 +361,9 @@ export async function getSubmoduleStatus(
       ...workingResult.entries.filter((entry) => !rangePaths.has(entry.path))
     ]
     return { ...workingResult, entries }
+  }
+  if (options.staged) {
+    return { ...workingResult, entries: [] }
   }
   return workingResult
 }
@@ -627,11 +655,14 @@ async function probeEffectiveUpstreamStatus(
   options: GitRuntimeOptions = {}
 ): Promise<{ status: GitUpstreamStatus; probedSameNameOriginRef: boolean }> {
   let probedSameNameOriginRef = false
+  const snapshotRunner = createGitConfigSnapshotRunner((args) =>
+    gitExecFileAsync(args, gitOptionsForWorktree(worktreePath, options))
+  )
   const status = await getEffectiveGitUpstreamStatus((args) => {
     if (args[0] === 'rev-parse' && args.includes(`refs/remotes/origin/${branchName}`)) {
       probedSameNameOriginRef = true
     }
-    return gitExecFileAsync(args, gitOptionsForWorktree(worktreePath, options))
+    return snapshotRunner(args)
   })
   return { status, probedSameNameOriginRef }
 }
@@ -849,7 +880,8 @@ export async function listSubmodulePaths(
   options: GitRuntimeOptions = {}
 ): Promise<string[]> {
   const now = Date.now()
-  const cached = submodulePathsCache.get(worktreePath)
+  const cacheKey = getSubmodulePathsCacheKey(worktreePath, options)
+  const cached = submodulePathsCache.get(cacheKey)
   if (cached && cached.expiresAt > now) {
     return cached.paths
   }
@@ -875,7 +907,7 @@ export async function listSubmodulePaths(
     // No .gitmodules (or git config failure) — treat as a repo without submodules.
     paths = []
   }
-  submodulePathsCache.set(worktreePath, { paths, expiresAt: now + SUBMODULE_PATHS_CACHE_TTL_MS })
+  submodulePathsCache.set(cacheKey, { paths, expiresAt: now + SUBMODULE_PATHS_CACHE_TTL_MS })
   return paths
 }
 
@@ -955,9 +987,11 @@ async function buildSubmodulePointerDiff(
   submodulePath: string,
   staged: boolean,
   compareAgainstHead: boolean,
-  options: GitRuntimeOptions
+  options: GitRuntimeOptions,
+  // Why: default to the validated resolver so every caller (not just loadDiff)
+  // is protected from a .gitmodules path escaping the parent worktree.
+  submoduleWorktreePath = resolveSubmoduleWorktreePath(worktreePath, submodulePath)
 ): Promise<GitDiffResult> {
-  const submoduleWorktreePath = path.join(worktreePath, submodulePath)
   let leftOid = ''
   let rightOid = ''
   if (staged) {
@@ -1056,6 +1090,10 @@ async function loadDiff(
   if (submodulePaths.length > 0) {
     const matchedSubmodule = findContainingSubmodule(submodulePaths, filePath)
     if (matchedSubmodule) {
+      // Why: matchedSubmodule originates from .gitmodules, so validate it against
+      // the worktree boundary before any inner read — a crafted submodule path
+      // must not let the diff escape the selected repo.
+      const submoduleWorktreePath = resolveSubmoduleWorktreePath(worktreePath, matchedSubmodule)
       const normalizedFilePath = filePath.replace(/\\/g, '/').replace(/\/+$/, '')
       if (normalizedFilePath === matchedSubmodule) {
         return buildSubmodulePointerDiff(
@@ -1063,15 +1101,18 @@ async function loadDiff(
           matchedSubmodule,
           staged,
           compareAgainstHead,
-          options
+          options,
+          submoduleWorktreePath
         )
       }
       const innerPath = normalizedFilePath.slice(matchedSubmodule.length + 1)
-      const submoduleWorktreePath = path.join(worktreePath, matchedSubmodule)
-      const fromOid =
-        (await readGitlinkOidFromIndex(worktreePath, matchedSubmodule, options)) ||
-        (await readGitlinkOidFromTree(worktreePath, 'HEAD', matchedSubmodule, options))
-      const toOid = await readWorkingSubmoduleHead(submoduleWorktreePath, options)
+      const fromOid = staged
+        ? await readGitlinkOidFromTree(worktreePath, 'HEAD', matchedSubmodule, options)
+        : (await readGitlinkOidFromIndex(worktreePath, matchedSubmodule, options)) ||
+          (await readGitlinkOidFromTree(worktreePath, 'HEAD', matchedSubmodule, options))
+      const toOid = staged
+        ? await readGitlinkOidFromIndex(worktreePath, matchedSubmodule, options)
+        : await readWorkingSubmoduleHead(submoduleWorktreePath, options)
       // Why: when the gitlink moved but the submodule worktree is clean, the
       // file's change lives in committed history — diff the two commits. Only
       // fall back to the working-tree blob read when the commit didn't move.
@@ -1729,14 +1770,14 @@ export async function stageFile(
   filePath: string,
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   try {
     await gitExecFileAsync(
       ['add', '--', literalPathspec(filePath)],
       gitOptionsForWorktree(worktreePath, options)
     )
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -1748,13 +1789,13 @@ export async function unstageFile(
   filePath: string,
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   try {
     await gitExecFileAsync(['restore', '--staged', '--', literalPathspec(filePath)], {
       ...gitOptionsForWorktree(worktreePath, options)
     })
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -1811,7 +1852,7 @@ export async function commitChanges(
   message: string,
   options: GitRuntimeOptions = {}
 ): Promise<{ success: boolean; error?: string }> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   try {
     await gitExecFileAsync(['commit', '-m', message], gitOptionsForWorktree(worktreePath, options))
     return { success: true }
@@ -1834,7 +1875,7 @@ export async function commitChanges(
       (error instanceof Error ? error.message : 'Commit failed')
     return { success: false, error: errorMessage }
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -1846,7 +1887,7 @@ export async function discardChanges(
   filePath: string,
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   const resolvedWorktree = path.resolve(worktreePath)
   const resolvedTarget = path.resolve(worktreePath, filePath)
   try {
@@ -1878,7 +1919,7 @@ export async function discardChanges(
       cleanUntrackedPaths(worktreePath, [targetPath], options)
     )
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -1948,7 +1989,7 @@ export async function bulkDiscardChanges(
   filePaths: string[],
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   if (filePaths.length === 0) {
     return
   }
@@ -1986,7 +2027,7 @@ export async function bulkDiscardChanges(
       }
     )
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -2012,7 +2053,7 @@ export async function bulkStageFiles(
   filePaths: string[],
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   if (filePaths.length === 0) {
     return
   }
@@ -2025,7 +2066,7 @@ export async function bulkStageFiles(
       )
     }
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }
 
@@ -2037,7 +2078,7 @@ export async function bulkUnstageFiles(
   filePaths: string[],
   options: GitRuntimeOptions = {}
 ): Promise<void> {
-  gitDiffReadDedupe.clear()
+  clearGitReadInvalidationState()
   if (filePaths.length === 0) {
     return
   }
@@ -2049,6 +2090,6 @@ export async function bulkUnstageFiles(
       })
     }
   } finally {
-    gitDiffReadDedupe.clear()
+    clearGitReadInvalidationState()
   }
 }

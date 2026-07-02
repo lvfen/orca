@@ -1,7 +1,7 @@
 /* eslint-disable max-lines -- Why: git status/discard/chunking behavior is verified together here to keep the command contract readable in one place. */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type * as NodeFs from 'fs'
-import path from 'path'
+import type * as NodeFs from 'node:fs'
+import path from 'node:path'
 import {
   MAX_RENDERED_DIFF_COMBINED_CHARACTERS,
   MAX_RENDERED_DIFF_LINES_PER_SIDE
@@ -81,6 +81,7 @@ import {
   getStatus,
   getSubmoduleStatus,
   isWithinWorktree,
+  listSubmodulePaths,
   resolveSubmoduleWorktreePath,
   stageFile
 } from './status'
@@ -778,6 +779,50 @@ describe('submodule diff routing', () => {
     expect(result.modifiedContent).toBe('v2\n')
   })
 
+  it('diffs staged inner files from parent HEAD to parent index', async () => {
+    gitExecFileAsyncMock.mockImplementation((args: string[], options?: { cwd?: string }) => {
+      if (args[0] === 'config' && args.includes('.gitmodules')) {
+        return Promise.resolve({
+          stdout: options?.cwd === PARENT ? 'submodule.flutter_mine.path flutter_mine\n' : ''
+        })
+      }
+      if (args[0] === 'ls-files') {
+        return Promise.resolve({ stdout: `160000 ${NEW_OID} 0\tflutter_mine\n` })
+      }
+      if (args[0] === 'ls-tree') {
+        return Promise.resolve({ stdout: `160000 commit ${OLD_OID}\tflutter_mine\n` })
+      }
+      if (args[0] === 'rev-parse') {
+        return Promise.resolve({ stdout: `${NEW_OID}\n` })
+      }
+      return Promise.resolve({ stdout: '' })
+    })
+    gitExecFileAsyncBufferMock.mockImplementation((args: string[]) => {
+      const spec = String(args.at(-1))
+      if (spec.startsWith(`${OLD_OID}:`)) {
+        return Promise.resolve({ stdout: Buffer.from('v1\n') })
+      }
+      if (spec.startsWith(`${NEW_OID}:`)) {
+        return Promise.resolve({ stdout: Buffer.from('v2\n') })
+      }
+      return Promise.resolve({ stdout: Buffer.from('') })
+    })
+
+    const result = await getDiff(PARENT, 'flutter_mine/lib/main.dart', true)
+
+    expect(gitExecFileAsyncBufferMock).toHaveBeenCalledWith(
+      ['show', '--end-of-options', `${OLD_OID}:lib/main.dart`],
+      { cwd: SUBMODULE, maxBuffer: 10 * 1024 * 1024 }
+    )
+    expect(gitExecFileAsyncBufferMock).toHaveBeenCalledWith(
+      ['show', '--end-of-options', `${NEW_OID}:lib/main.dart`],
+      { cwd: SUBMODULE, maxBuffer: 10 * 1024 * 1024 }
+    )
+    expect(result.kind).toBe('text')
+    expect(result.originalContent).toBe('v1\n')
+    expect(result.modifiedContent).toBe('v2\n')
+  })
+
   it('reads inner files from the working tree when the commit is unchanged', async () => {
     // Override the gitlink oids so recorded == checked-out (no pointer move),
     // routing the inner diff back to the index/working-tree blob read.
@@ -809,6 +854,34 @@ describe('submodule diff routing', () => {
     expect(result.originalContent).toBe('old\n')
     expect(result.modifiedContent).toBe('new')
   })
+
+  it('rejects inner submodule diffs whose .gitmodules path escapes the worktree', async () => {
+    // A crafted .gitmodules path must not let the inner diff read escape the
+    // selected worktree; loadDiff routes through resolveSubmoduleWorktreePath.
+    gitExecFileAsyncMock.mockImplementation((args: string[], options?: { cwd?: string }) => {
+      if (args[0] === 'config' && args.includes('.gitmodules')) {
+        return Promise.resolve({
+          stdout: options?.cwd === PARENT ? 'submodule.evil.path ../evil\n' : ''
+        })
+      }
+      return Promise.resolve({ stdout: '' })
+    })
+
+    await expect(getDiff(PARENT, '../evil/secret.txt', false)).rejects.toThrow('Access denied')
+  })
+
+  it('rejects gitlink pointer diffs whose .gitmodules path escapes the worktree', async () => {
+    gitExecFileAsyncMock.mockImplementation((args: string[], options?: { cwd?: string }) => {
+      if (args[0] === 'config' && args.includes('.gitmodules')) {
+        return Promise.resolve({
+          stdout: options?.cwd === PARENT ? 'submodule.evil.path ../evil\n' : ''
+        })
+      }
+      return Promise.resolve({ stdout: '' })
+    })
+
+    await expect(getDiff(PARENT, '../evil', false)).rejects.toThrow('Access denied')
+  })
 })
 
 describe('resolveSubmoduleWorktreePath', () => {
@@ -823,6 +896,33 @@ describe('resolveSubmoduleWorktreePath', () => {
       'Access denied'
     )
     expect(() => resolveSubmoduleWorktreePath('/repo', '../outside')).toThrow('Access denied')
+  })
+})
+
+describe('listSubmodulePaths', () => {
+  beforeEach(() => {
+    clearSubmodulePathsCacheForTests()
+    gitExecFileAsyncMock.mockReset()
+  })
+
+  it('keeps cached .gitmodules paths separate per WSL distro', async () => {
+    gitExecFileAsyncMock.mockImplementation((_args: string[], options?: { wslDistro?: string }) =>
+      Promise.resolve({
+        stdout:
+          options?.wslDistro === 'debian'
+            ? 'submodule.lib.path debian-lib\n'
+            : 'submodule.lib.path ubuntu-lib\n'
+      })
+    )
+
+    await expect(listSubmodulePaths('/repo', { wslDistro: 'ubuntu' })).resolves.toEqual([
+      'ubuntu-lib'
+    ])
+    await expect(listSubmodulePaths('/repo', { wslDistro: 'debian' })).resolves.toEqual([
+      'debian-lib'
+    ])
+
+    expect(gitExecFileAsyncMock).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -875,6 +975,36 @@ describe('getSubmoduleStatus', () => {
     })
 
     const result = await getSubmoduleStatus('/repo', 'flutter_mine')
+
+    expect(result.entries).toContainEqual(
+      expect.objectContaining({ path: 'lib/main.dart', status: 'modified', area: 'unstaged' })
+    )
+  })
+
+  it('includes staged commit-range entries from parent HEAD to parent index', async () => {
+    const OLD_OID = 'a'.repeat(40)
+    const NEW_OID = 'b'.repeat(40)
+    readFileMock.mockResolvedValue('gitdir: /repo/flutter_mine/.git\n')
+    existsSyncMock.mockReturnValue(false)
+    gitExecFileAsyncMock.mockReset()
+    gitExecFileAsyncMock.mockImplementation((args: string[]) => {
+      // Clean submodule worktree: the staged parent gitlink still has files to show.
+      if (args.includes('--name-status')) {
+        return Promise.resolve({ stdout: 'M\tlib/main.dart\n' })
+      }
+      if (args[0] === 'ls-files') {
+        return Promise.resolve({ stdout: `160000 ${NEW_OID} 0\tflutter_mine\n` })
+      }
+      if (args[0] === 'ls-tree') {
+        return Promise.resolve({ stdout: `160000 commit ${OLD_OID}\tflutter_mine\n` })
+      }
+      if (args[0] === 'rev-parse') {
+        return Promise.resolve({ stdout: `${NEW_OID}\n` })
+      }
+      return Promise.resolve({ stdout: '' })
+    })
+
+    const result = await getSubmoduleStatus('/repo', 'flutter_mine', { staged: true })
 
     expect(result.entries).toContainEqual(
       expect.objectContaining({ path: 'lib/main.dart', status: 'modified', area: 'unstaged' })
@@ -962,6 +1092,36 @@ describe('getStatus', () => {
     await vi.waitFor(() => expect(statusCommandCalls).toBe(2))
     releaseStatusReads.splice(0).forEach((release) => release())
     await settledRead
+    expect(statusCommandCalls).toBe(2)
+  })
+
+  it('clears in-flight status reads when a mutation runs', async () => {
+    readFileMock.mockResolvedValue('gitdir: /repo/.git/worktrees/feature\n')
+    existsSyncMock.mockReturnValue(false)
+    let statusCommandCalls = 0
+    const releaseStatusReads: (() => void)[] = []
+    gitExecFileAsyncMock.mockImplementation((args: string[]) => {
+      if (args.includes('status')) {
+        statusCommandCalls += 1
+        return new Promise<{ stdout: string }>((resolve) => {
+          releaseStatusReads.push(() => resolve({ stdout: '' }))
+        })
+      }
+      return Promise.resolve({ stdout: '' })
+    })
+
+    const first = getStatus('/repo')
+    await vi.waitFor(() => expect(statusCommandCalls).toBe(1))
+
+    // A mutation must invalidate the in-flight status read so the next getStatus
+    // starts fresh instead of joining a pre-mutation promise and going stale.
+    await stageFile('/repo', 'src/file.ts')
+
+    const second = getStatus('/repo')
+    await vi.waitFor(() => expect(statusCommandCalls).toBe(2))
+
+    releaseStatusReads.splice(0).forEach((release) => release())
+    await Promise.all([first, second])
     expect(statusCommandCalls).toBe(2)
   })
 

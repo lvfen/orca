@@ -1,7 +1,7 @@
-import { mkdtempSync } from 'fs'
-import type { AddressInfo } from 'net'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { mkdtempSync } from 'node:fs'
+import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket, WebSocketServer } from 'ws'
 import {

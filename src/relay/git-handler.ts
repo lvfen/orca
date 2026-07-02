@@ -1,8 +1,8 @@
 /* eslint-disable max-lines -- Why: this relay handler centralizes the git RPC
 protocol surface so local and SSH git behavior stay in one dispatch table. */
-import { execFile, spawn, type ExecFileOptions } from 'child_process'
-import { promisify } from 'util'
-import * as path from 'path'
+import { execFile, spawn, type ExecFileOptions } from 'node:child_process'
+import { promisify } from 'node:util'
+import * as path from 'node:path'
 import type { RelayDispatcher, RequestContext } from './dispatcher'
 import type { RelayContext } from './context'
 import { expandTilde } from './context'
@@ -25,16 +25,19 @@ import {
   createSubmodulePathsCache,
   findContainingSubmodule,
   listSubmodulePathsCached,
+  resolveSubmoduleWorktreePath,
   resolveSubmoduleCommitRange,
   type SubmodulePathsCache
 } from './git-handler-submodule-ops'
 import { commitCompare as commitCompareOp, commitDiffEntry } from './git-handler-commit-diff-ops'
 import {
+  areRelayWorktreePathsEqual,
   commitChangesRelay,
   addWorktreeOp,
   removeWorktreeOp,
   worktreeIsCleanOp
 } from './git-handler-worktree-ops'
+import { forceDeletePreservedRelayBranch } from './git-handler-branch-cleanup'
 import { refreshLocalBaseRefForWorktreeCreateOp } from './git-handler-local-base-ref-refresh'
 import { checkIgnoredPathsOp, detectConflictOperation, getStatusOp } from './git-handler-status-ops'
 import { resolveRelayPushTarget } from './git-handler-push-target'
@@ -61,6 +64,73 @@ import { InFlightPromiseDedupe, stableInFlightKey } from '../shared/in-flight-pr
 const execFileAsync = promisify(execFile)
 const MAX_GIT_BUFFER = 10 * 1024 * 1024
 const BULK_CHUNK_SIZE = 100
+
+function resolveSubmoduleStatusArea(
+  params: Record<string, unknown>
+): 'staged' | 'unstaged' | 'untracked' {
+  if (params.area === 'staged' || params.area === 'unstaged' || params.area === 'untracked') {
+    return params.area
+  }
+  return 'unstaged'
+}
+
+function getErrorText(error: unknown): string {
+  if (typeof error === 'object' && error !== null) {
+    const parts: string[] = []
+    if ('message' in error && typeof error.message === 'string') {
+      parts.push(error.message)
+    }
+    if ('stderr' in error && typeof error.stderr === 'string') {
+      parts.push(error.stderr)
+    }
+    return parts.join('\n')
+  }
+  return String(error)
+}
+
+function isUnsupportedRevParsePathFormatError(error: unknown): boolean {
+  return /(?:unknown|invalid|unrecognized).*(?:--path-format|path-format)/i.test(
+    getErrorText(error)
+  )
+}
+
+function isWindowsAbsolutePath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\')
+}
+
+function resolveRelayPath(repoPath: string, value: string): string {
+  if (path.posix.isAbsolute(value) || path.win32.isAbsolute(value)) {
+    return value
+  }
+  // Old git ignores `--path-format=absolute`, so a relative toplevel/git-dir
+  // must be resolved against the scanned repo path. Mirror worktree.ts's
+  // resolveRevParsePath: pick the win32/posix resolver from the repoPath shape.
+  return isWindowsAbsolutePath(repoPath)
+    ? path.win32.resolve(repoPath, value)
+    : path.posix.resolve(repoPath, value)
+}
+
+type RelayRepoLocation = { topLevel: string; commonDir: string }
+
+function parseRelayRepoLocation(repoPath: string, output: string): RelayRepoLocation | undefined {
+  // Old git (pre `--path-format`) echoes the unrecognized flag to stdout and
+  // exits 0 rather than erroring, so drop any echoed `-`-prefixed lines and
+  // read the two trailing path lines (toplevel, then git-common-dir). Strip only
+  // the trailing CR, not surrounding spaces — git paths may legitimately start
+  // or end with a space.
+  const lines = output
+    .split('\n')
+    .map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line))
+    .filter((line) => line.length > 0 && !line.startsWith('-'))
+  if (lines.length < 2) {
+    return undefined
+  }
+  const [topLevel, commonDir] = lines.slice(-2)
+  return {
+    topLevel: resolveRelayPath(repoPath, topLevel),
+    commonDir: resolveRelayPath(repoPath, commonDir)
+  }
+}
 
 function execFileWithStdin(
   command: string,
@@ -154,6 +224,9 @@ export class GitHandler {
       this.refreshLocalBaseRefForWorktreeCreate(p)
     )
     this.dispatcher.onRequest('git.renameCurrentBranch', (p) => this.renameCurrentBranch(p))
+    this.dispatcher.onRequest('git.forceDeletePreservedBranch', (p) =>
+      this.forceDeletePreservedBranch(p)
+    )
     this.dispatcher.onRequest('git.exec', (p, context) => this.exec(p, context))
     this.dispatcher.onRequest('git.clone', (p, context) => this.clone(p, context))
     this.dispatcher.onRequest('git.isGitRepo', (p) => this.isGitRepo(p))
@@ -227,11 +300,9 @@ export class GitHandler {
   private async getSubmoduleStatus(params: Record<string, unknown>) {
     const worktreePath = params.worktreePath as string
     const submodulePath = params.submodulePath as string
-    const resolved = path.resolve(worktreePath, submodulePath)
-    const rel = path.relative(path.resolve(worktreePath), resolved)
-    if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
-      throw new Error(`Submodule path "${submodulePath}" resolves outside the worktree`)
-    }
+    const area = resolveSubmoduleStatusArea(params)
+    const staged = area === 'staged'
+    const resolved = resolveSubmoduleWorktreePath(worktreePath, submodulePath)
     const workingResult = await getStatusOp(this.git.bind(this), {
       ...params,
       worktreePath: resolved
@@ -242,7 +313,8 @@ export class GitHandler {
     const { fromOid, toOid } = await resolveSubmoduleCommitRange(
       this.git.bind(this),
       worktreePath,
-      submodulePath
+      submodulePath,
+      staged
     )
     if (fromOid && toOid && fromOid !== toOid) {
       const rangeEntries = await computeSubmoduleRangeEntries(
@@ -251,12 +323,18 @@ export class GitHandler {
         fromOid,
         toOid
       )
+      if (staged) {
+        return { ...workingResult, entries: rangeEntries }
+      }
       const rangePaths = new Set(rangeEntries.map((entry) => entry.path))
       const entries = [
         ...rangeEntries,
         ...workingResult.entries.filter((entry) => !rangePaths.has(entry.path))
       ]
       return { ...workingResult, entries }
+    }
+    if (staged) {
+      return { ...workingResult, entries: [] }
     }
     return workingResult
   }
@@ -311,12 +389,16 @@ export class GitHandler {
                 compareAgainstHead
               )
             }
-            const submoduleWorktreePath = path.join(worktreePath, matchedSubmodule)
+            const submoduleWorktreePath = resolveSubmoduleWorktreePath(
+              worktreePath,
+              matchedSubmodule
+            )
             const innerPath = normalizedFilePath.slice(matchedSubmodule.length + 1)
             const { fromOid, toOid } = await resolveSubmoduleCommitRange(
               this.git.bind(this),
               worktreePath,
-              matchedSubmodule
+              matchedSubmodule,
+              staged
             )
             // Why: a moved gitlink (clean worktree) keeps inner changes in
             // committed history, so diff the two commits; otherwise read the
@@ -1093,6 +1175,28 @@ export class GitHandler {
     })
   }
 
+  private async forceDeletePreservedBranch(params: Record<string, unknown>) {
+    const repoPath = params.repoPath
+    const branchName = params.branchName
+    const expectedHead = params.expectedHead
+    if (
+      typeof repoPath !== 'string' ||
+      typeof branchName !== 'string' ||
+      typeof expectedHead !== 'string'
+    ) {
+      throw new Error('Invalid preserved branch force-delete request.')
+    }
+    // Why: an empty repoPath would resolve `cwd` to the relay's own process
+    // directory, running the destructive update-ref against the wrong repo. NUL
+    // bytes cannot reach git safely either; reject both at the boundary.
+    if (!repoPath || repoPath.includes('\0') || expectedHead.includes('\0')) {
+      throw new Error('Invalid preserved branch force-delete request.')
+    }
+    return this.runWithDiffDedupeClear(() =>
+      forceDeletePreservedRelayBranch(this.git.bind(this), repoPath, branchName, expectedHead)
+    )
+  }
+
   private async isGitRepo(params: Record<string, unknown>) {
     const dirPath = params.dirPath as string
     try {
@@ -1103,11 +1207,70 @@ export class GitHandler {
     }
   }
 
+  private async readRepoLocation(repoPath: string): Promise<RelayRepoLocation | undefined> {
+    try {
+      const { stdout } = await this.git(
+        ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'],
+        repoPath
+      )
+      return parseRelayRepoLocation(repoPath, stdout)
+    } catch (error) {
+      if (!isUnsupportedRevParsePathFormatError(error)) {
+        return undefined
+      }
+    }
+
+    try {
+      const { stdout } = await this.git(
+        ['rev-parse', '--show-toplevel', '--git-common-dir'],
+        repoPath
+      )
+      return parseRelayRepoLocation(repoPath, stdout)
+    } catch {
+      return undefined
+    }
+  }
+
+  private async normalizeMainWorktreePath(
+    repoPath: string,
+    worktrees: Record<string, unknown>[]
+  ): Promise<Record<string, unknown>[]> {
+    const mainIndex = worktrees.findIndex((worktree) => worktree.isMainWorktree === true)
+    const mainWorktree = worktrees[mainIndex]
+    const mainPath = typeof mainWorktree?.path === 'string' ? mainWorktree.path : ''
+    // Expand `~` so the early-return matches git's absolute porcelain path for
+    // legacy SSH repos stored with a tilde, sparing them a rev-parse per poll.
+    const resolvedRepoPath = expandTilde(repoPath)
+    if (!mainPath || areRelayWorktreePathsEqual(mainPath, resolvedRepoPath)) {
+      return worktrees
+    }
+
+    const location = await this.readRepoLocation(resolvedRepoPath)
+    if (!location) {
+      return worktrees
+    }
+
+    // Why: only a separate-git-dir/submodule main worktree reports the Git
+    // directory as the main entry — i.e. the main entry equals git-common-dir.
+    // A linked worktree's main entry is a real working root, so gating on this
+    // equality avoids overwriting it with the linked worktree's own toplevel.
+    if (!areRelayWorktreePathsEqual(mainPath, location.commonDir)) {
+      return worktrees
+    }
+
+    const normalized = [...worktrees]
+    normalized[mainIndex] = { ...mainWorktree, path: location.topLevel }
+    return normalized
+  }
+
   private async listWorktrees(params: Record<string, unknown>) {
     const repoPath = params.repoPath as string
     try {
       const { stdout } = await this.git(['worktree', 'list', '--porcelain', '-z'], repoPath)
-      return parseWorktreeList(stdout, { nulDelimited: true })
+      return this.normalizeMainWorktreePath(
+        repoPath,
+        parseWorktreeList(stdout, { nulDelimited: true })
+      )
     } catch (error) {
       if (!isUnsupportedWorktreeListZError(error)) {
         return []
@@ -1118,7 +1281,7 @@ export class GitHandler {
     // Git rejects it. Fall back to the original line-block parser there.
     try {
       const { stdout } = await this.git(['worktree', 'list', '--porcelain'], repoPath)
-      return parseWorktreeList(stdout)
+      return this.normalizeMainWorktreePath(repoPath, parseWorktreeList(stdout))
     } catch {
       return []
     }

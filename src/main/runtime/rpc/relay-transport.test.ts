@@ -1,4 +1,4 @@
-import type { AddressInfo } from 'net'
+import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocketServer } from 'ws'
 import type { WebSocket } from 'ws'

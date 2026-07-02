@@ -45,16 +45,18 @@ let latest: UseSourceControlSubmoduleStatusResult | null = null
 function Probe({
   worktreeId,
   worktreePath,
-  entries
+  entries,
+  settings = null
 }: {
   worktreeId: string
   worktreePath: string
   entries: GitStatusEntry[]
+  settings?: { activeRuntimeEnvironmentId: string | null } | null
 }): null {
   latest = useSourceControlSubmoduleStatus({
     activeWorktreeId: worktreeId,
     worktreePath,
-    activeRepoSettings: null,
+    activeRepoSettings: settings,
     entries
   })
   return null
@@ -62,6 +64,15 @@ function Probe({
 
 function innerEntry(path: string): GitStatusEntry {
   return { path, status: 'modified', area: 'unstaged' } as GitStatusEntry
+}
+
+function submoduleEntry(area: GitStatusEntry['area'] = 'unstaged'): GitStatusEntry {
+  return {
+    path: 'sub',
+    status: 'modified',
+    area,
+    submodule: { commitChanged: true, trackedChanges: false, untrackedChanges: false }
+  } as GitStatusEntry
 }
 
 afterEach(() => {
@@ -87,20 +98,20 @@ describe('useSourceControlSubmoduleStatus', () => {
     roots.push(root)
 
     await act(async () => {
-      root.render(<Probe worktreeId="A" worktreePath="/a" entries={[]} />)
+      root.render(<Probe worktreeId="A" worktreePath="/a" entries={[submoduleEntry()]} />)
     })
     // Expand a submodule in worktree A -> issues the (slow) A request.
     await act(async () => {
-      latest?.toggleSubmodule('sub')
+      latest?.toggleSubmodule(submoduleEntry())
     })
     await flush()
 
     // Switch to worktree B (same submodule path) and expand it there.
     await act(async () => {
-      root.render(<Probe worktreeId="B" worktreePath="/b" entries={[]} />)
+      root.render(<Probe worktreeId="B" worktreePath="/b" entries={[submoduleEntry()]} />)
     })
     await act(async () => {
-      latest?.toggleSubmodule('sub')
+      latest?.toggleSubmodule(submoduleEntry())
     })
     await flush()
 
@@ -114,7 +125,7 @@ describe('useSourceControlSubmoduleStatus', () => {
     })
     await flush()
 
-    expect(latest?.submoduleStatusByPath.sub).toEqual({
+    expect(latest?.submoduleStatusByKey['unstaged::sub']).toEqual({
       status: 'loaded',
       entries: [innerEntry('from-b.ts')]
     })
@@ -132,18 +143,18 @@ describe('useSourceControlSubmoduleStatus', () => {
     roots.push(root)
 
     await act(async () => {
-      root.render(<Probe worktreeId="A" worktreePath="/a" entries={[]} />)
+      root.render(<Probe worktreeId="A" worktreePath="/a" entries={[submoduleEntry()]} />)
     })
     await act(async () => {
-      latest?.toggleSubmodule('sub')
+      latest?.toggleSubmodule(submoduleEntry())
     })
     await flush()
 
     await act(async () => {
-      root.render(<Probe worktreeId="B" worktreePath="/b" entries={[]} />)
+      root.render(<Probe worktreeId="B" worktreePath="/b" entries={[submoduleEntry()]} />)
     })
     await act(async () => {
-      latest?.toggleSubmodule('sub')
+      latest?.toggleSubmodule(submoduleEntry())
     })
     await flush()
 
@@ -156,9 +167,93 @@ describe('useSourceControlSubmoduleStatus', () => {
     })
     await flush()
 
-    expect(latest?.submoduleStatusByPath.sub).toEqual({
+    expect(latest?.submoduleStatusByKey['unstaged::sub']).toEqual({
       status: 'loaded',
       entries: [innerEntry('from-b.ts')]
+    })
+  })
+
+  it('drops a late response from a previous runtime target on the same worktree', async () => {
+    const envA = deferred<{ entries: GitStatusEntry[] }>()
+    const envB = deferred<{ entries: GitStatusEntry[] }>()
+    mocks.getRuntimeGitSubmoduleStatus.mockImplementation(
+      (ctx: { settings?: { activeRuntimeEnvironmentId?: string | null } | null }) =>
+        ctx.settings?.activeRuntimeEnvironmentId === 'env-b' ? envB.promise : envA.promise
+    )
+
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    roots.push(root)
+
+    await act(async () => {
+      root.render(
+        <Probe
+          worktreeId="A"
+          worktreePath="/a"
+          settings={{ activeRuntimeEnvironmentId: 'env-a' }}
+          entries={[submoduleEntry()]}
+        />
+      )
+    })
+    await act(async () => {
+      latest?.toggleSubmodule(submoduleEntry())
+    })
+    await flush()
+
+    await act(async () => {
+      root.render(
+        <Probe
+          worktreeId="A"
+          worktreePath="/a"
+          settings={{ activeRuntimeEnvironmentId: 'env-b' }}
+          entries={[submoduleEntry()]}
+        />
+      )
+    })
+    await act(async () => {
+      latest?.toggleSubmodule(submoduleEntry())
+    })
+    await flush()
+
+    await act(async () => {
+      envB.resolve({ entries: [innerEntry('from-env-b.ts')] })
+    })
+    await flush()
+    await act(async () => {
+      envA.resolve({ entries: [innerEntry('from-env-a.ts')] })
+    })
+    await flush()
+
+    expect(latest?.submoduleStatusByKey['unstaged::sub']).toEqual({
+      status: 'loaded',
+      entries: [innerEntry('from-env-b.ts')]
+    })
+  })
+
+  it('passes the row area when expanding a staged submodule row', async () => {
+    mocks.getRuntimeGitSubmoduleStatus.mockResolvedValue({ entries: [innerEntry('from-index.ts')] })
+
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    roots.push(root)
+    const stagedEntry = submoduleEntry('staged')
+
+    await act(async () => {
+      root.render(<Probe worktreeId="A" worktreePath="/a" entries={[stagedEntry]} />)
+    })
+    await act(async () => {
+      latest?.toggleSubmodule(stagedEntry)
+    })
+    await flush()
+
+    expect(mocks.getRuntimeGitSubmoduleStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ worktreeId: 'A', worktreePath: '/a' }),
+      'sub',
+      'staged'
+    )
+    expect(latest?.submoduleStatusByKey['staged::sub']).toEqual({
+      status: 'loaded',
+      entries: [innerEntry('from-index.ts')]
     })
   })
 })

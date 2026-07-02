@@ -1,8 +1,7 @@
 // Why: extracted from rpc-client.ts to keep that module under its line budget.
-// These are the pure frame-decoding helpers — binary terminal-stream dispatch,
-// websocket payload coercion, and streaming-result type guards — none of which
-// touch the connection's mutable closure state directly (the terminal dispatch
-// receives its listener/snapshot maps as arguments).
+// These are the pure frame-decoding helpers — binary terminal-stream dispatch
+// and streaming-result type guards — none of which touch the connection's
+// mutable closure state directly.
 import {
   TerminalStreamOpcode,
   decodeTerminalStreamFrame,
@@ -21,7 +20,8 @@ export type TerminalSnapshotState = {
 export function dispatchTerminalBinaryFrame(
   bytes: Uint8Array,
   terminalStreamListeners: Map<number, TerminalStreamListener>,
-  terminalSnapshots: Map<number, TerminalSnapshotState>
+  terminalSnapshots: Map<number, TerminalSnapshotState>,
+  recordValidatedInboundTraffic: () => void = () => {}
 ): void {
   const frame = decodeTerminalStreamFrame(bytes)
   if (!frame) {
@@ -29,9 +29,11 @@ export function dispatchTerminalBinaryFrame(
   }
   const listener = terminalStreamListeners.get(frame.streamId)
   if (!listener) {
+    recordValidatedInboundTraffic()
     return
   }
   if (frame.opcode === TerminalStreamOpcode.Output) {
+    recordValidatedInboundTraffic()
     listener({
       type: 'data',
       streamId: frame.streamId,
@@ -44,10 +46,12 @@ export function dispatchTerminalBinaryFrame(
     if (!meta) {
       return
     }
+    recordValidatedInboundTraffic()
     terminalSnapshots.set(frame.streamId, { streamId: frame.streamId, meta, chunks: [] })
     return
   }
   if (frame.opcode === TerminalStreamOpcode.SnapshotChunk) {
+    recordValidatedInboundTraffic()
     const snapshot = terminalSnapshots.get(frame.streamId)
     if (!snapshot) {
       return
@@ -56,6 +60,7 @@ export function dispatchTerminalBinaryFrame(
     return
   }
   if (frame.opcode === TerminalStreamOpcode.SnapshotEnd) {
+    recordValidatedInboundTraffic()
     const snapshot = terminalSnapshots.get(frame.streamId)
     if (!snapshot) {
       return
@@ -75,6 +80,7 @@ export function dispatchTerminalBinaryFrame(
     if (!meta) {
       return
     }
+    recordValidatedInboundTraffic()
     listener({
       ...meta,
       type: 'resized',
@@ -83,6 +89,7 @@ export function dispatchTerminalBinaryFrame(
     return
   }
   if (frame.opcode === TerminalStreamOpcode.Error) {
+    recordValidatedInboundTraffic()
     listener({
       type: 'error',
       streamId: frame.streamId,
@@ -111,28 +118,4 @@ export function isBrowserScreencastReadyResult(
     (value as { type?: unknown }).type === 'ready' &&
     typeof (value as { subscriptionId?: unknown }).subscriptionId === 'string'
   )
-}
-
-export async function websocketPayloadToUint8(value: unknown): Promise<Uint8Array | null> {
-  if (value instanceof Uint8Array) {
-    return value
-  }
-  if (value instanceof ArrayBuffer) {
-    return new Uint8Array(value)
-  }
-  if (value && typeof value === 'object' && 'arrayBuffer' in value) {
-    const blob = value as { arrayBuffer: () => Promise<ArrayBuffer> }
-    return new Uint8Array(await blob.arrayBuffer())
-  }
-  if (typeof FileReader !== 'undefined' && value instanceof Blob) {
-    return new Promise((resolve) => {
-      const reader = new FileReader()
-      reader.onload = () => {
-        resolve(reader.result instanceof ArrayBuffer ? new Uint8Array(reader.result) : null)
-      }
-      reader.onerror = () => resolve(null)
-      reader.readAsArrayBuffer(value)
-    })
-  }
-  return null
 }

@@ -2,8 +2,8 @@
 // host slot on the relay), so it lives in a hardened owner-only file alongside
 // the device registry — never in plain settings. This module is the single
 // read/write boundary for that persisted token.
-import { existsSync, readFileSync, rmSync } from 'fs'
-import { join } from 'path'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { decodePcToken } from '../../shared/relay-token'
 import { hardenExistingSecureFile, writeSecureJsonFile } from '../../shared/secure-file'
 

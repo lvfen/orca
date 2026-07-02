@@ -2,6 +2,7 @@ import type { GitStatusEntry } from '../../../../shared/types'
 import { basename } from '@/lib/path'
 import type { SourceControlSectionArea } from './source-control-section-order'
 import type { SourceControlTreeNode } from './source-control-tree'
+import type { FlatEntry } from './useSourceControlSelection'
 
 export type SubmoduleSectionTreeNode = SourceControlTreeNode<
   GitStatusEntry,
@@ -29,6 +30,25 @@ export type SubmoduleStatusState =
   | { status: 'loaded'; entries: GitStatusEntry[] }
   | { status: 'error'; error: string }
 
+export function getSubmoduleExpansionKey(entry: Pick<GitStatusEntry, 'area' | 'path'>): string {
+  return `${entry.area}::${entry.path}`
+}
+
+export function parseSubmoduleExpansionKey(
+  key: string
+): { area: GitStatusEntry['area']; path: string } | null {
+  const separatorIndex = key.indexOf('::')
+  if (separatorIndex <= 0) {
+    return null
+  }
+  const area = key.slice(0, separatorIndex)
+  if (area !== 'staged' && area !== 'unstaged' && area !== 'untracked') {
+    return null
+  }
+  const path = key.slice(separatorIndex + 2)
+  return path ? { area, path } : null
+}
+
 /**
  * Any changed submodule is shown as an expandable row: worktree dirtiness
  * (tracked/untracked) expands to the inner `git status`, and a moved commit
@@ -47,15 +67,21 @@ export function isExpandableSubmoduleEntry(entry: GitStatusEntry): boolean {
  * Build the read-only inner entry for a submodule child row. The inner path is
  * relative to the submodule root, so it is prefixed with the submodule path
  * (drives diff routing) and stamped with `submoduleRoot` (drives read-only
- * gating). The inner entry's own status/area are preserved.
+ * gating). Staged parent gitlink rows force staged children because their
+ * expansion represents HEAD->index, but worktree-only rows keep the inner
+ * entry's own area so staged-only submodule changes don't open empty diffs.
  */
 export function buildSubmoduleChildEntry(
   submodulePath: string,
-  innerEntry: GitStatusEntry
+  innerEntry: GitStatusEntry,
+  parentArea: GitStatusEntry['area'] = innerEntry.area
 ): GitStatusEntry {
+  const area = parentArea === 'staged' ? 'staged' : innerEntry.area
   return {
     ...innerEntry,
     path: `${submodulePath}/${innerEntry.path}`,
+    ...(innerEntry.oldPath ? { oldPath: `${submodulePath}/${innerEntry.oldPath}` } : {}),
+    area,
     submoduleRoot: submodulePath
   }
 }
@@ -69,14 +95,14 @@ export function buildSubmoduleChildNodes(
 ): (SubmoduleSectionTreeNode & { type: 'file' })[] {
   const submodulePath = parent.entry.path
   return innerEntries.map((innerEntry) => {
-    const childEntry = buildSubmoduleChildEntry(submodulePath, innerEntry)
+    const childEntry = buildSubmoduleChildEntry(submodulePath, innerEntry, parent.entry.area)
     return {
       type: 'file',
-      key: `${parent.area}::${childEntry.path}`,
+      key: `${childEntry.area}::${childEntry.path}`,
       name: basename(childEntry.path),
       path: childEntry.path,
       entry: childEntry,
-      area: parent.area,
+      area: childEntry.area,
       depth: parent.depth + 1
     }
   })
@@ -97,19 +123,20 @@ export type RenderableSubmoduleListItem =
  */
 export function injectExpandedSubmoduleEntries(
   entries: readonly GitStatusEntry[],
-  expandedSubmodulePaths: ReadonlySet<string>,
-  submoduleStatusByPath: Readonly<Record<string, SubmoduleStatusState>>,
+  expandedSubmoduleKeys: ReadonlySet<string>,
+  submoduleStatusByKey: Readonly<Record<string, SubmoduleStatusState>>,
   loadingMessage: string,
   emptyMessage: string
 ): RenderableSubmoduleListItem[] {
   const result: RenderableSubmoduleListItem[] = []
   for (const entry of entries) {
     result.push({ type: 'entry', entry })
-    if (!isExpandableSubmoduleEntry(entry) || !expandedSubmodulePaths.has(entry.path)) {
+    const expansionKey = getSubmoduleExpansionKey(entry)
+    if (!isExpandableSubmoduleEntry(entry) || !expandedSubmoduleKeys.has(expansionKey)) {
       continue
     }
     const submodulePath = entry.path
-    const state = submoduleStatusByPath[submodulePath]
+    const state = submoduleStatusByKey[expansionKey]
     if (!state || state.status === 'loading') {
       result.push({
         type: 'submodule-placeholder',
@@ -144,7 +171,32 @@ export function injectExpandedSubmoduleEntries(
       continue
     }
     for (const innerEntry of state.entries) {
-      result.push({ type: 'entry', entry: buildSubmoduleChildEntry(submodulePath, innerEntry) })
+      result.push({
+        type: 'entry',
+        entry: buildSubmoduleChildEntry(submodulePath, innerEntry, entry.area)
+      })
+    }
+  }
+  return result
+}
+
+/**
+ * Map injected list rows to selection entries. List-view selection/range/open-key
+ * bookkeeping must read the same submodule-injected rows it renders; otherwise an
+ * expanded submodule's child files render with handlers but stay unselectable.
+ * Placeholders are skipped because they are not selectable.
+ */
+export function collectListSelectionEntries(
+  rows: readonly RenderableSubmoduleListItem[]
+): FlatEntry[] {
+  const result: FlatEntry[] = []
+  for (const row of rows) {
+    if (row.type === 'entry') {
+      result.push({
+        key: `${row.entry.area}::${row.entry.path}`,
+        entry: row.entry,
+        area: row.entry.area
+      })
     }
   }
   return result
@@ -157,8 +209,8 @@ export function injectExpandedSubmoduleEntries(
  */
 export function injectExpandedSubmoduleRows(
   nodes: SubmoduleSectionTreeNode[],
-  expandedSubmodulePaths: ReadonlySet<string>,
-  submoduleStatusByPath: Readonly<Record<string, SubmoduleStatusState>>,
+  expandedSubmoduleKeys: ReadonlySet<string>,
+  submoduleStatusByKey: Readonly<Record<string, SubmoduleStatusState>>,
   loadingMessage: string,
   emptyMessage: string
 ): RenderableSourceControlNode[] {
@@ -168,12 +220,12 @@ export function injectExpandedSubmoduleRows(
     if (
       node.type !== 'file' ||
       !isExpandableSubmoduleEntry(node.entry) ||
-      !expandedSubmodulePaths.has(node.entry.path)
+      !expandedSubmoduleKeys.has(getSubmoduleExpansionKey(node.entry))
     ) {
       continue
     }
     const submodulePath = node.entry.path
-    const state = submoduleStatusByPath[submodulePath]
+    const state = submoduleStatusByKey[getSubmoduleExpansionKey(node.entry)]
     if (!state || state.status === 'loading') {
       result.push({
         type: 'submodule-placeholder',

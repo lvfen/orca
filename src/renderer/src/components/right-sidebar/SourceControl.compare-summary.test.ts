@@ -8,6 +8,7 @@ import {
   resolveSourceControlCompareBaseRef,
   resolveSourceControlPickerBaseRef,
   shouldClearBranchCompareForMissingBase,
+  shouldRefreshBranchCompareForRemoteStatus,
   shouldRefreshBranchCompareForStatusHead,
   shouldShowCompareSummary
 } from './SourceControl'
@@ -264,7 +265,7 @@ describe('SourceControl compare summary', () => {
     ).toBe('origin/feature')
   })
 
-  it('returns null (working-tree only) when on and the branch has no upstream', () => {
+  it('falls back to the merge target when on and the branch has no upstream', () => {
     expect(
       resolveSourceControlCompareBaseRef({
         enabled: true,
@@ -273,12 +274,25 @@ describe('SourceControl compare summary', () => {
         upstreamName: null,
         fallbackBaseRef: 'origin/master'
       })
+    ).toBe('origin/master')
+  })
+
+  it('returns null only when no upstream or fallback base exists', () => {
+    expect(
+      resolveSourceControlCompareBaseRef({
+        enabled: true,
+        worktreeBaseRef: null,
+        repoBaseRef: null,
+        upstreamName: null,
+        fallbackBaseRef: null
+      })
     ).toBeNull()
   })
 
   it('keeps the branch compare while upstream status is still loading', () => {
     // remoteStatus undefined means upstream status has not loaded yet; the
-    // prefer-upstream setting makes compareBaseRef momentarily null in this gap.
+    // upstream policy can still make compareBaseRef momentarily null when no
+    // fallback base is available.
     expect(
       shouldClearBranchCompareForMissingBase({
         isFolder: false,
@@ -434,6 +448,56 @@ describe('SourceControl compare summary', () => {
         { baseRef: 'origin/main', statusHead: 'old-head', worktreeId: 'wt-1' },
         { baseRef: 'origin/release', statusHead: 'new-head', worktreeId: 'wt-1' }
       )
+    ).toBe(false)
+  })
+
+  it('refreshes branch compare when upstream status changes for the same base', () => {
+    expect(
+      shouldRefreshBranchCompareForRemoteStatus(
+        {
+          ahead: 1,
+          baseRef: 'origin/main',
+          behind: 0,
+          hasUpstream: true,
+          upstreamName: 'origin/main',
+          worktreeId: 'wt-1'
+        },
+        {
+          ahead: 0,
+          baseRef: 'origin/main',
+          behind: 0,
+          hasUpstream: true,
+          upstreamName: 'origin/main',
+          worktreeId: 'wt-1'
+        }
+      )
+    ).toBe(true)
+  })
+
+  it('does not refresh branch compare for initial or unrelated upstream status snapshots', () => {
+    const current = {
+      ahead: 0,
+      baseRef: 'origin/main',
+      behind: 0,
+      hasUpstream: true,
+      upstreamName: 'origin/main',
+      worktreeId: 'wt-1'
+    }
+
+    expect(shouldRefreshBranchCompareForRemoteStatus(null, current)).toBe(false)
+    expect(
+      shouldRefreshBranchCompareForRemoteStatus(current, {
+        ...current,
+        baseRef: 'origin/release',
+        ahead: 1
+      })
+    ).toBe(false)
+    expect(
+      shouldRefreshBranchCompareForRemoteStatus(current, {
+        ...current,
+        worktreeId: 'wt-2',
+        ahead: 1
+      })
     ).toBe(false)
   })
 

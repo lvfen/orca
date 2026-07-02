@@ -7,7 +7,7 @@
  * configured submodule paths so inner files recurse into the submodule worktree.
  * Split from git-handler-ops.ts to keep that file under the max-lines budget.
  */
-import * as path from 'path'
+import * as path from 'node:path'
 import { buildDiffResult } from './git-diff-result'
 import { parseBranchDiff } from './git-handler-utils'
 import { parseNumstat } from '../shared/git-uncommitted-line-stats'
@@ -87,6 +87,20 @@ export function findContainingSubmodule(submodulePaths: string[], filePath: stri
   return best
 }
 
+// Why: .gitmodules is repo-controlled; validate its paths before relay reads
+// or diffs inside a submodule worktree.
+export function resolveSubmoduleWorktreePath(worktreePath: string, submodulePath: string): string {
+  if (!submodulePath || submodulePath.includes('\0') || path.isAbsolute(submodulePath)) {
+    throw new Error('Access denied: invalid submodule path')
+  }
+  const resolved = path.resolve(worktreePath, submodulePath)
+  const rel = path.relative(path.resolve(worktreePath), resolved)
+  if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new Error('Access denied: submodule path resolves outside the worktree')
+  }
+  return resolved
+}
+
 async function readGitlinkOidFromTree(
   git: GitExec,
   worktreePath: string,
@@ -133,13 +147,17 @@ async function readWorkingSubmoduleHead(
 export async function resolveSubmoduleCommitRange(
   git: GitExec,
   worktreePath: string,
-  submodulePath: string
+  submodulePath: string,
+  staged = false
 ): Promise<{ fromOid: string; toOid: string }> {
-  const submoduleWorktreePath = path.join(worktreePath, submodulePath)
-  const fromOid =
-    (await readGitlinkOidFromIndex(git, worktreePath, submodulePath)) ||
-    (await readGitlinkOidFromTree(git, worktreePath, 'HEAD', submodulePath))
-  const toOid = await readWorkingSubmoduleHead(git, submoduleWorktreePath)
+  const submoduleWorktreePath = resolveSubmoduleWorktreePath(worktreePath, submodulePath)
+  const fromOid = staged
+    ? await readGitlinkOidFromTree(git, worktreePath, 'HEAD', submodulePath)
+    : (await readGitlinkOidFromIndex(git, worktreePath, submodulePath)) ||
+      (await readGitlinkOidFromTree(git, worktreePath, 'HEAD', submodulePath))
+  const toOid = staged
+    ? await readGitlinkOidFromIndex(git, worktreePath, submodulePath)
+    : await readWorkingSubmoduleHead(git, submoduleWorktreePath)
   return { fromOid, toOid }
 }
 
@@ -205,7 +223,7 @@ export async function computeSubmodulePointerDiff(
   staged: boolean,
   compareAgainstHead = false
 ) {
-  const submoduleWorktreePath = path.join(worktreePath, submodulePath)
+  const submoduleWorktreePath = resolveSubmoduleWorktreePath(worktreePath, submodulePath)
   let leftOid = ''
   let rightOid = ''
   if (staged) {
