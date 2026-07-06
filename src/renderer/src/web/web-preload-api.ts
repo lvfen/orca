@@ -649,6 +649,7 @@ function createWebPreloadApi(): Partial<PreloadApi> {
     preflight: createPreflightApi(),
     notifications: createNotificationsApi(),
     rateLimits: createRateLimitsApi(),
+    minimaxCredentials: createMiniMaxCredentialsApi(),
     codexAccounts: createAccountsApi(),
     claudeAccounts: createAccountsApi(),
     cli: createCliApi(),
@@ -2489,6 +2490,8 @@ function createRateLimitsApi(): NonNullable<Partial<PreloadApi>['rateLimits']> {
     gemini: null,
     opencodeGo: null,
     kimi: null,
+    minimax: null,
+    minimaxCookieConfigured: false,
     claudeTarget: { runtime: 'host', wslDistro: null },
     codexTarget: { runtime: 'host', wslDistro: null },
     inactiveClaudeAccounts: [],
@@ -2505,7 +2508,18 @@ function createRateLimitsApi(): NonNullable<Partial<PreloadApi>['rateLimits']> {
     setPollingInterval: () => Promise.resolve(),
     fetchInactiveClaudeAccounts: () => Promise.resolve(),
     fetchInactiveCodexAccounts: () => Promise.resolve(),
+    refreshMiniMax: () => Promise.resolve(empty),
     onUpdate: () => noopUnsubscribe
+  }
+}
+
+function createMiniMaxCredentialsApi(): NonNullable<Partial<PreloadApi>['minimaxCredentials']> {
+  const notConfigured = { configured: false }
+  const unsupportedError = new Error('MiniMax cookie storage is only available in the desktop app.')
+  return {
+    getStatus: () => Promise.resolve(notConfigured),
+    saveCookie: () => Promise.reject(unsupportedError),
+    clearCookie: () => Promise.resolve(notConfigured)
   }
 }
 
@@ -2574,6 +2588,8 @@ function createPtyApi(): NonNullable<Partial<PreloadApi>['pty']> {
     resize: () => {},
     reportGeometry: () => {},
     signal: () => {},
+    // Web panes clear the host buffer via the terminal.clearBuffer runtime RPC.
+    clearBuffer: () => {},
     kill: () => Promise.resolve(),
     ackColdRestore: () => {},
     ackData: () => {},
@@ -2883,6 +2899,12 @@ async function getRuntimeBackedStoredSettings(): Promise<GlobalSettings> {
     if (typeof result.settings.compactWorktreeCards === 'boolean') {
       runtimeSettings.compactWorktreeCards = result.settings.compactWorktreeCards
     }
+    if (typeof result.settings.minimaxGroupId === 'string') {
+      runtimeSettings.minimaxGroupId = result.settings.minimaxGroupId
+    }
+    if (typeof result.settings.minimaxUsageModels === 'string') {
+      runtimeSettings.minimaxUsageModels = result.settings.minimaxUsageModels
+    }
     const next = mergeSettings(local, runtimeSettings)
     writeJson(SETTINGS_STORAGE_KEY, next)
     return next
@@ -2905,6 +2927,12 @@ async function syncRuntimeBackedSettings(
   }
   if (typeof updates.compactWorktreeCards === 'boolean') {
     runtimeUpdates.compactWorktreeCards = updates.compactWorktreeCards
+  }
+  if (typeof updates.minimaxGroupId === 'string') {
+    runtimeUpdates.minimaxGroupId = updates.minimaxGroupId
+  }
+  if (typeof updates.minimaxUsageModels === 'string') {
+    runtimeUpdates.minimaxUsageModels = updates.minimaxUsageModels
   }
   if (Object.keys(runtimeUpdates).length === 0) {
     return localNext

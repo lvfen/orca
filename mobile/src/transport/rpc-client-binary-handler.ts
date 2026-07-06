@@ -2,8 +2,10 @@ import {
   decodeBrowserScreencastFrame,
   type BrowserScreencastFrame
 } from './browser-screencast-protocol'
-import { dispatchTerminalBinaryFrame } from './rpc-client-frame-decoding'
-import type { TerminalSnapshotState } from './rpc-client-frame-decoding'
+import {
+  handleTerminalBinaryFrame,
+  type TerminalSnapshotState
+} from './rpc-client-terminal-binary-frame'
 
 type BrowserStream = {
   method: string
@@ -33,12 +35,11 @@ export function createRpcClientBinaryHandler({
       handleBrowserBinaryFrame(browserFrame)
       return
     }
-    dispatchTerminalBinaryFrame(
-      bytes,
-      terminalStreamListeners,
+    handleTerminalBinaryFrame(bytes, {
       terminalSnapshots,
+      getListener: (streamId) => terminalStreamListeners.get(streamId),
       recordValidatedInboundTraffic
-    )
+    })
   }
 
   function handleBrowserBinaryFrame(frame: BrowserScreencastFrame): void {

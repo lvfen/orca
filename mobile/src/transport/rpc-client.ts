@@ -1,10 +1,4 @@
-import type {
-  RpcResponse,
-  RpcSuccess,
-  ConnectionState,
-  ConnectionLogLevel,
-  ConnectionLogSink
-} from './types'
+import type { RpcResponse, RpcSuccess, ConnectionState, ConnectionLogLevel } from './types'
 import {
   generateKeyPair,
   deriveSharedKey,
@@ -14,13 +8,12 @@ import {
   decrypt,
   decryptBytes
 } from './e2ee'
-import type { BrowserScreencastFrame } from './browser-screencast-protocol'
 import {
   isTerminalSubscribedResult,
-  isBrowserScreencastReadyResult,
-  type TerminalSnapshotState
+  isBrowserScreencastReadyResult
 } from './rpc-client-frame-decoding'
 import { createRpcClientBinaryHandler } from './rpc-client-binary-handler'
+import type { TerminalSnapshotState } from './rpc-client-terminal-binary-frame'
 import {
   buildTerminalUnsubscribeParams,
   updateTerminalSubscriptionViewport as updateCachedTerminalSubscriptionViewport
@@ -30,142 +23,31 @@ import { RelayCloseCode, encodeClientJoin, parseRelayControlFrame } from './rela
 import { isRpcResponse } from './rpc-response-shape'
 import { websocketPayloadToUint8 } from './websocket-payload-bytes'
 import { websocketCloseLogDetail } from './websocket-close-log-detail'
-import {
-  startRelayV2PreHandshake,
-  type RelayV2ConnectOptions,
-  type RelayV2PreHandshake
-} from './relay-v2-prehandshake'
+import { startRelayV2PreHandshake, type RelayV2PreHandshake } from './relay-v2-prehandshake'
 import { redactedEndpoint } from './redacted-endpoint'
+import {
+  ACTIVITY_PROBE_INTERVAL_MS,
+  AUTH_RETRY_BUDGET,
+  CONNECT_TIMEOUT_MS,
+  GIVE_UP_AFTER_ATTEMPTS,
+  HANDSHAKE_TIMEOUT_MS,
+  RECONNECT_DELAYS,
+  RELAY_JOIN_TIMEOUT_MS,
+  REQUEST_TIMEOUT_MS,
+  WEBSOCKET_CONNECTING_STATE
+} from './rpc-client-connection-policy'
+import type {
+  ConnectOptions,
+  ConnectWaiter,
+  PendingRequest,
+  RpcClient,
+  SendRequestOptions,
+  StreamRequest,
+  StreamingListener,
+  SubscribeOptions
+} from './rpc-client-contract'
 
-type PendingRequest = {
-  resolve: (response: RpcResponse) => void
-  reject: (error: Error) => void
-}
-
-type ConnectWaiter = {
-  resolve: () => void
-  reject: (error: Error) => void
-  timeout: ReturnType<typeof setTimeout> | null
-}
-
-type SendRequestOptions = {
-  timeoutMs?: number
-}
-
-type SubscribeOptions = {
-  onBinaryFrame?: (frame: BrowserScreencastFrame) => void
-}
-
-type StreamingListener = (result: unknown) => void
-
-type StreamRequest = {
-  method: string
-  params: unknown
-  listener: StreamingListener
-  onBinaryFrame?: (frame: BrowserScreencastFrame) => void
-  subscriptionId?: string
-  cancelled?: boolean
-  sent?: boolean
-}
-
-export type RpcClient = {
-  sendRequest: (
-    method: string,
-    params?: unknown,
-    options?: SendRequestOptions
-  ) => Promise<RpcResponse>
-  subscribe: (
-    method: string,
-    params: unknown,
-    onData: StreamingListener,
-    options?: SubscribeOptions
-  ) => () => void
-  updateTerminalSubscriptionViewport: (
-    terminal: string,
-    viewport: { cols: number; rows: number }
-  ) => void
-  getState: () => ConnectionState
-  // Why: UI escalates "Reconnecting…" to "Can't connect" once attempts cross
-  // a threshold. 0 means never failed; counter is reset on successful open.
-  getReconnectAttempt: () => number
-  // Why: timestamp (ms epoch) of the last time we reached 'connected'.
-  // null = never connected since the client was created. Used by the UI
-  // to distinguish "host moved/never reachable" from "transient blip".
-  getLastConnectedAt: () => number | null
-  onStateChange: (listener: (state: ConnectionState) => void) => () => void
-  // Why: app-resume hook. Android/iOS can kill the TCP path or park the
-  // reconnect loop while the app is backgrounded; callers invoke this on
-  // AppState 'active' so the session recovers without an app restart.
-  notifyForeground: () => void
-  close: () => void
-}
-
-// Why: tiered backoff. The first four entries (500ms→4s) keep
-// auto-recovery snappy for the common case — a brief Wi-Fi blip,
-// laptop wake, or AP-isolation cycle. Beyond that we slow down
-// (8s→60s) so a phone whose desktop is genuinely unreachable doesn't
-// burn a TCP SYN every 4s indefinitely while still healing on its
-// own when the network recovers. With 12 total attempts, the last
-// four reuse the 60s cap (Math.min(idx, length-1)), so total elapsed
-// time across all 12 attempts is ≈ 6 minutes before the give-up cap
-// fires (0.5+1+2+4+8+15+30+60+60+60+60+60 ≈ 360s).
-const RECONNECT_DELAYS = [500, 1000, 2000, 4000, 8000, 15_000, 30_000, 60_000]
-// Why: cap auto-retry once we're clearly unreachable for a long time.
-// With the tiered backoff above this is ≈ 6 minutes of continuous
-// failure before we stop and surface the re-pair banner. The longer
-// runway tolerates flaky AP-isolation routers and laptop sleep cycles
-// that briefly drop the LAN path. MUST stay aligned with
-// connection-health.ts UNREACHABLE_ATTEMPTS so the "unreachable"
-// verdict matches the moment the loop actually pauses — if these
-// drift the user sees "Reconnecting…" while the loop is silently
-// parked.
-const GIVE_UP_AFTER_ATTEMPTS = 12
-// Why: a single `unauthorized`/`e2ee_error` is not proof the pairing is dead.
-// Issue #5200: a tablet showed "Auth failed" and forced a needless re-pair
-// while the desktop still listed it as paired with a valid token — a transient
-// rejection (mid-session resume race, a stale frame after background) latched
-// the terminal auth-failed state permanently. Retry the full handshake this
-// many times with a clean reconnect before declaring auth dead. A genuinely
-// revoked token is rejected on every attempt and converges to auth-failed in
-// seconds; a one-off glitch self-heals without the user re-pairing.
-const AUTH_RETRY_BUDGET = 3
-const REQUEST_TIMEOUT_MS = 30_000
-const CONNECT_TIMEOUT_MS = 12_000
-const HANDSHAKE_TIMEOUT_MS = 5_000
-// Why: relay pre-handshake budget. After the socket opens we send client-join
-// and wait for room-ready (the desktop host may still be connecting to the
-// relay). If it never arrives, close so the normal backoff reconnect retries —
-// this is how the phone heals once the host comes online.
-const RELAY_JOIN_TIMEOUT_MS = 12_000
-// Why: RN's WebSocket implementation may not expose static readyState
-// constants, but the protocol value for CONNECTING is stable across runtimes.
-const WEBSOCKET_CONNECTING_STATE = 0
-
-// Why: RN auto-pongs WebSocket pings natively, so JS needs an app-level
-// liveness probe to detect half-open sockets. Any inbound app traffic after
-// a probe starts proves the link is alive; otherwise an unanswered probe
-// force-closes the socket so the reconnect path can recover.
-const ACTIVITY_PROBE_INTERVAL_MS = 20_000
-
-export type RelayConnectOptions = {
-  // The orca-mb_ mobile token sent in the relay client-join frame. Its presence
-  // switches connect() into relay mode: open socket → client-join → room-ready
-  // → existing E2EE flow, with `endpoint` pointing at the relay URL.
-  mobileToken: string
-}
-
-export type ConnectOptions = {
-  onStateChange?: (state: ConnectionState) => void
-  // Fires for every observable lifecycle event so the UI can render a
-  // detailed connection log. Useful when 'Connecting…' hangs forever
-  // (e.g. broken Tailscale route) and you need to see *where* it's stuck.
-  onLog?: ConnectionLogSink
-  // When set, run the relay pre-handshake before the E2EE flow.
-  relay?: RelayConnectOptions
-  // Relay v2 uses PC-led channels. The mobile socket first binds/resumes with
-  // the relay server, then starts the same desktop E2EE/RPC handshake.
-  relayV2?: RelayV2ConnectOptions
-}
+export type { ConnectOptions, RelayConnectOptions, RpcClient } from './rpc-client-contract'
 
 export function connect(
   endpoint: string,
@@ -603,6 +485,7 @@ export function connect(
                 pendingBrowserScreencastRequestId = id
                 activeBrowserScreencastRequestId = null
               }
+              resetTerminalStreamRoutingForRequest(id)
               if (
                 sendEncrypted({ id, deviceToken, method: stream.method, params: stream.params })
               ) {
@@ -825,7 +708,7 @@ export function connect(
     sharedKey = null
     activeBrowserScreencastRequestId = null
     pendingBrowserScreencastRequestId = null
-    streamListeners.forEach((stream) => (stream.sent = false))
+    markStreamsForReplay()
     if (handshakeTimer) {
       clearTimeout(handshakeTimer)
       handshakeTimer = null
@@ -903,7 +786,7 @@ export function connect(
       ws = null
       sharedKey = null
       // Why: close cleanup stale-bails here, so mark active streams for replay.
-      streamListeners.forEach((stream) => (stream.sent = false))
+      markStreamsForReplay()
       rejectAllPending(reason)
       if (closing) {
         closing.close()
@@ -1042,6 +925,25 @@ export function connect(
     if (stream?.method === 'browser.screencast') {
       stream.cancelled = true
     }
+  }
+
+  function markStreamsForReplay(): void {
+    for (const [id, stream] of streamListeners) {
+      stream.sent = false
+      resetTerminalStreamRoutingForRequest(id)
+    }
+  }
+
+  function resetTerminalStreamRoutingForRequest(id: string): void {
+    const terminalStreamIds = terminalStreamIdsByRequest.get(id)
+    if (!terminalStreamIds) {
+      return
+    }
+    for (const streamId of terminalStreamIds) {
+      terminalStreamListeners.delete(streamId)
+      terminalSnapshots.delete(streamId)
+    }
+    terminalStreamIdsByRequest.delete(id)
   }
 
   function emitStreamError(stream: StreamRequest, message: string, error?: unknown): void {

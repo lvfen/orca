@@ -6,6 +6,7 @@ import type {
 import { isTerminalLeafId } from '../../../../shared/stable-pane-id'
 import type { PaneManager } from '@/lib/pane-manager/pane-manager'
 import { replayIntoTerminal, type ReplayingPanesRef } from './replay-guard'
+import type { RestoredViewportBlankingPanesRef } from './terminal-restored-viewport'
 import {
   getLeftmostLeafId,
   normalizeTerminalLayoutSnapshot,
@@ -161,8 +162,8 @@ export function serializePaneTree(node: HTMLElement | null): TerminalPaneLayoutN
   // We read the computed flex-grow values to derive the first-child proportion.
   let ratio: number | undefined
   if (first && second) {
-    const firstGrow = parseFloat(first.style.flex) || 1
-    const secondGrow = parseFloat(second.style.flex) || 1
+    const firstGrow = Number.parseFloat(first.style.flex) || 1
+    const secondGrow = Number.parseFloat(second.style.flex) || 1
     const total = firstGrow + secondGrow
     if (total > 0) {
       const r = firstGrow / total
@@ -211,7 +212,8 @@ export function restoreScrollbackBuffers(
   manager: PaneManager,
   savedBuffers: Record<string, string> | undefined,
   restoredPaneByLeafId: Map<string, number>,
-  replayingPanesRef: ReplayingPanesRef
+  replayingPanesRef: ReplayingPanesRef,
+  restoredViewportBlankingPanesRef?: RestoredViewportBlankingPanesRef
 ): void {
   if (!savedBuffers) {
     return
@@ -249,6 +251,9 @@ export function restoreScrollbackBuffers(
         // The shell underneath is fresh and has no TUI consuming these modes.
         // See POST_REPLAY_MODE_RESET comment.
         replayIntoTerminal(pane, replayingPanesRef, POST_REPLAY_MODE_RESET)
+        // Why: connection resolution happens after layout replay; only the
+        // fresh-shell paths should move these visible rows into scrollback.
+        restoredViewportBlankingPanesRef?.current.add(pane.id)
       }
     } catch {
       // If restore fails, continue with blank terminal.
