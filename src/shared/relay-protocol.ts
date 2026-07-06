@@ -21,9 +21,8 @@ export const RelayCloseCode = {
 
 export type RelayRole = 'host' | 'client'
 
-// Why: the desktop relay host socket's lifecycle, surfaced to the renderer for
-// the Server Token settings UI. Lives in shared (not the main-process transport)
-// so the preload bridge can type it without importing Node-only deps.
+// Why: legacy relay host socket lifecycle lives in shared so older runtime
+// compatibility code can type it without importing Node-only deps.
 export type RelayConnectionState =
   | 'disconnected'
   | 'connecting'

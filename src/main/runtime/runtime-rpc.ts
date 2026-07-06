@@ -17,13 +17,30 @@ import type { MobileTransport, RpcMessageContext, RpcTransport } from './rpc/tra
 import { UnixSocketTransport } from './rpc/unix-socket-transport'
 import { WebSocketTransport } from './rpc/ws-transport'
 import { RelayTransport, type RelayStatus } from './rpc/relay-transport'
+import { RelayV2Transport } from './rpc/relay-v2-transport'
 import type { WebSocket } from 'ws'
 import { DeviceRegistry, type DeviceScope } from './device-registry'
 import { loadOrCreateE2EEKeypair, type E2EEKeypair } from './e2ee-keypair'
 import { E2EEChannel } from './rpc/e2ee-channel'
 import { encodePairingOffer, PAIRING_OFFER_VERSION } from '../../shared/pairing'
+import type { RelayCertificateTokenPayload } from '../../shared/relay-certificate-token'
 import { decodePcToken } from '../../shared/relay-token'
 import { clearRelayPcToken, saveRelayPcToken } from './relay-config-store'
+import type {
+  CreateInviteResult,
+  DesktopRelaySettings,
+  DesktopRelayV2Status,
+  SaveRelayUrlResult
+} from '../../shared/relay-v2-desktop'
+import {
+  clearRelayV2Config,
+  createRelayV2Config,
+  loadRelayV2Config,
+  normalizeRelayV2Url,
+  saveRelayV2Config,
+  toDesktopRelaySettings,
+  type RelayV2Config
+} from './relay-v2-config-store'
 import {
   decodeTerminalStreamFrame,
   type TerminalStreamFrame
@@ -411,6 +428,10 @@ export class OrcaRuntimeRpcServer {
   private relayTransport: RelayTransport | null = null
   private relayPcToken: string | null
   private relayStatus: RelayStatus = { state: 'disconnected', attempt: 0, phoneOnline: false }
+  private relayV2Transport: RelayV2Transport | null = null
+  private relayV2Config: RelayV2Config | null = null
+  private relayV2Status: DesktopRelayV2Status = this.buildRelayV2Status(null)
+  private readonly relayV2StatusListeners = new Set<(status: DesktopRelayV2Status) => void>()
   private activeTransports: RpcTransport[] = []
   private transports: RuntimeTransportMetadata[] = []
   // Why: each WebSocket connection has its own E2EE channel that manages the
@@ -454,6 +475,8 @@ export class OrcaRuntimeRpcServer {
     this.wsPort = wsPort
     this.webClientRoot = webClientRoot
     this.relayPcToken = relayPcToken ?? null
+    this.relayV2Config = loadRelayV2Config(userDataPath)
+    this.relayV2Status = this.buildRelayV2Status(this.relayV2Config)
     this.keepaliveIntervalMs = keepaliveIntervalMs
     this.longPollCap = longPollCap
   }
@@ -544,6 +567,84 @@ export class OrcaRuntimeRpcServer {
     return this.relayTransport?.getStatus() ?? this.relayStatus
   }
 
+  getRelayV2Settings(): DesktopRelaySettings {
+    return toDesktopRelaySettings(this.relayV2Config)
+  }
+
+  getRelayV2Status(): DesktopRelayV2Status {
+    return this.relayV2Transport?.getStatus() ?? this.relayV2Status
+  }
+
+  onRelayV2StatusChange(listener: (status: DesktopRelayV2Status) => void): () => void {
+    this.relayV2StatusListeners.add(listener)
+    return () => this.relayV2StatusListeners.delete(listener)
+  }
+
+  async saveRelayV2Url(relayUrl: string): Promise<SaveRelayUrlResult> {
+    const normalized = normalizeRelayV2Url(relayUrl)
+    if (!normalized) {
+      return { ok: false, reason: 'invalid-url', status: this.getRelayV2Status() }
+    }
+    const existing = this.relayV2Config
+    const config = existing
+      ? { ...existing, relayUrl: normalized }
+      : createRelayV2Config(normalized)
+    this.relayV2Config = config
+    saveRelayV2Config(this.userDataPath, config)
+    await this.startRelayV2Transport(config)
+    return {
+      ok: true,
+      settings: toDesktopRelaySettings(config),
+      status: this.getRelayV2Status()
+    }
+  }
+
+  async clearRelayV2Settings(): Promise<void> {
+    this.relayV2Config = null
+    clearRelayV2Config(this.userDataPath)
+    await this.stopRelayV2Transport()
+  }
+
+  async trustRelayV2Certificate(certificate: RelayCertificateTokenPayload): Promise<boolean> {
+    const config = this.relayV2Config
+    if (!config || normalizeRelayV2Url(certificate.relayUrl) !== config.relayUrl) {
+      return false
+    }
+    const next = { ...config, serverCaDerB64: certificate.caCertDerB64 }
+    this.relayV2Config = next
+    saveRelayV2Config(this.userDataPath, next)
+    await this.startRelayV2Transport(next)
+    return true
+  }
+
+  async createRelayV2Invite(
+    mode: 'keep-existing' | 'disconnect-existing'
+  ): Promise<CreateInviteResult> {
+    const transport = this.relayV2Transport
+    if (!transport) {
+      return { ok: false, reason: 'not-connected', status: this.getRelayV2Status() }
+    }
+    const result = await transport.createInvite(mode)
+    if (!result.ok) {
+      return result
+    }
+    this.ensureMobileSecurityState()
+    // Why: relay v2 authorizes the socket at the relay layer, but the desktop
+    // E2EE channel still requires a DeviceRegistry token before RPC traffic is
+    // accepted. The token is added only to the PC-rendered QR, never persisted
+    // in relay-server state.
+    const device = this.deviceRegistry!.addDevice('Relay v2 phone', 'mobile')
+    const qrPayload = { ...result.invite.qrPayload, deviceToken: device.token }
+    return {
+      ...result,
+      invite: {
+        ...result.invite,
+        qrPayload,
+        qrPayloadJson: JSON.stringify(qrPayload)
+      }
+    }
+  }
+
   // Why: set/replace the relay bridge token at runtime (from the IPC layer).
   // Persists the bearer token to a hardened file and restarts the outbound host
   // socket against the new relay/room. A token that doesn't decode is rejected
@@ -564,11 +665,8 @@ export class OrcaRuntimeRpcServer {
     await this.stopRelayTransport()
   }
 
-  // Why: the phone needs the desktop's E2EE public key plus a relay-scoped
-  // device token (validated by the same DeviceRegistry as LAN pairing) to
-  // authenticate the tunnel, and the roomId/relayUrl to dial. This is the
-  // payload behind the "Server Token" QR. The relay device token is stable so
-  // the phone keeps working across reconnects; revoke it to cut access.
+  // Why: legacy relay pairing needs the desktop E2EE public key plus a
+  // relay-scoped device token. V2 uses PC-led invites instead.
   getRelayPairingInfo():
     | { available: false }
     | {
@@ -711,6 +809,67 @@ export class OrcaRuntimeRpcServer {
     this.relayStatus = { state: 'disconnected', attempt: 0, phoneOnline: false }
     if (transport) {
       await transport.stop()
+    }
+  }
+
+  private async startRelayV2Transport(config: RelayV2Config): Promise<void> {
+    await this.stopRelayV2Transport()
+    this.ensureMobileSecurityState()
+    const publicKeyB64 = this.getE2EEPublicKey()
+    if (!publicKeyB64) {
+      this.updateRelayV2Status(
+        this.buildRelayV2Status(config, 'unauthorized', 'missing-public-key')
+      )
+      return
+    }
+    const transport = new RelayV2Transport({
+      relayUrl: config.relayUrl,
+      pcId: config.pcId,
+      pcName: config.pcName,
+      pcSecret: config.pcSecret,
+      publicKeyB64,
+      serverCaDerB64: config.serverCaDerB64
+    })
+    this.relayV2Transport = transport
+    this.wireMobileTransport(transport)
+    transport.onStatusChange((status) => {
+      if (this.relayV2Transport === transport) {
+        this.updateRelayV2Status(status)
+      }
+    })
+    await transport.start()
+  }
+
+  private async stopRelayV2Transport(): Promise<void> {
+    const transport = this.relayV2Transport
+    this.relayV2Transport = null
+    if (transport) {
+      await transport.stop()
+    }
+    this.updateRelayV2Status(this.buildRelayV2Status(this.relayV2Config))
+  }
+
+  private buildRelayV2Status(
+    config: RelayV2Config | null,
+    state: DesktopRelayV2Status['state'] = 'idle',
+    lastError: string | null = null
+  ): DesktopRelayV2Status {
+    return {
+      state,
+      relayUrl: config?.relayUrl ?? null,
+      pcId: config?.pcId ?? null,
+      pcName: config?.pcName ?? toDesktopRelaySettings(null).pcName,
+      attempt: 0,
+      mobile: null,
+      channelId: null,
+      lastError
+    }
+  }
+
+  private updateRelayV2Status(status: DesktopRelayV2Status): void {
+    this.relayV2Status = status
+    for (const listener of this.relayV2StatusListeners) {
+      listener(status)
     }
   }
 
@@ -933,9 +1092,15 @@ export class OrcaRuntimeRpcServer {
         console.error('[runtime] Failed to start relay transport:', error)
       })
     }
+    if (this.relayV2Config) {
+      await this.startRelayV2Transport(this.relayV2Config).catch((error) => {
+        console.error('[runtime] Failed to start relay v2 transport:', error)
+      })
+    }
   }
 
   async stop(): Promise<void> {
+    await this.stopRelayV2Transport()
     await this.stopRelayTransport()
     const transports = this.activeTransports
     this.activeTransports = []

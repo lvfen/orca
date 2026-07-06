@@ -2,7 +2,6 @@ import { useState, useRef, useCallback } from 'react'
 import {
   View,
   Text,
-  StyleSheet,
   Pressable,
   ActivityIndicator,
   Linking,
@@ -14,22 +13,32 @@ import { useRouter } from 'expo-router'
 import { ChevronLeft, Clipboard as ClipboardIcon, QrCode } from 'lucide-react-native'
 import { decodePairingUrl, parsePairingCode } from '../src/transport/pairing'
 import {
-  startPairingConnectionAttempt,
-  type PairingConnectionAttempt
-} from '../src/transport/pairing-connection-attempt'
-import { connect } from '../src/transport/rpc-client'
-import { saveHost, getNextHostName } from '../src/transport/host-store'
-import type { ConnectionLogEntry, PairingOffer, RpcResponse } from '../src/transport/types'
-import { colors, spacing, radii, typography } from '../src/theme/mobile-theme'
+  connectAndSaveLanPairing,
+  type LanPairingFlowResult
+} from '../src/transport/lan-pairing-connection-flow'
+import type { PairingConnectionAttempt } from '../src/transport/pairing-connection-attempt'
+import { RELAY_CERTIFICATE_TOKEN_PREFIX } from '../src/transport/relay-token'
+import type { ConnectionLogEntry, PairingOffer } from '../src/transport/types'
+import { colors, spacing } from '../src/theme/mobile-theme'
 import { TextInputModal } from '../src/components/TextInputModal'
 import { ConnectionLog } from '../src/components/ConnectionLog'
+import { styles } from '../src/transport/pair-scan-styles'
+import { decodeRelayV2Invite, type RelayInviteV2Payload } from '../src/relay/relay-v2-invite'
+import { RelayV2CertificateScreen } from '../src/relay/relay-v2-certificate-screen'
+import {
+  connectAndSaveRelayV2,
+  type AddRelayFlowResult
+} from '../src/relay/add-relay-connection-flows'
+import {
+  openRelayCertificateToken,
+  openRelayV2CertificateProfile as openRelayV2CertificateProfileFile
+} from '../src/relay/relay-certificate-installation'
 
-// Why: see pair-confirm.tsx — cap initial-pair "Connecting…" so a broken
-// route surfaces as a real error with the log visible instead of a
-// silent infinite spinner.
-const PAIRING_OVERALL_TIMEOUT_MS = 25_000
 const SCAN_RETICLE_SCALE = 0.62
 const SCAN_RETICLE_MAX_SIZE = 360
+
+type ScanStatus = 'scanning' | 'certificate-required' | 'connecting' | 'error'
+type ConnectionKind = 'lan' | 'relay'
 
 function Step({ number, text }: { number: number; text: string }) {
   return (
@@ -46,12 +55,17 @@ export default function PairScanScreen() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const [permission, requestPermission] = useCameraPermissions()
-  const [status, setStatus] = useState<'scanning' | 'connecting' | 'error'>('scanning')
+  const [status, setStatus] = useState<ScanStatus>('scanning')
+  const [connectionKind, setConnectionKind] = useState<ConnectionKind>('lan')
   const [errorMessage, setErrorMessage] = useState('')
+  const [noticeMessage, setNoticeMessage] = useState('')
+  const [certificateNotice, setCertificateNotice] = useState('')
+  const [certificateError, setCertificateError] = useState('')
   const [pasteVisible, setPasteVisible] = useState(false)
   const [cameraBounds, setCameraBounds] = useState({ width: 0, height: 0 })
   const [logs, setLogs] = useState<ConnectionLogEntry[]>([])
   const logsRef = useRef<ConnectionLogEntry[]>([])
+  const relayV2InviteRef = useRef<RelayInviteV2Payload | null>(null)
   const processingRef = useRef(false)
   const mountedRef = useRef(true)
   const activePairingAttemptRef = useRef<PairingConnectionAttempt | null>(null)
@@ -68,42 +82,55 @@ export default function PairScanScreen() {
     activePairingAttemptRef.current = null
   }, [])
 
-  const handleBarCodeScanned = useCallback(
-    ({ data }: { data: string }) => {
-      if (processingRef.current) {
-        return
-      }
+  const handleBarCodeScanned = useCallback(({ data }: { data: string }) => {
+    if (processingRef.current) {
+      return
+    }
+
+    const invite = decodeRelayV2Invite(data)
+    if (invite) {
       processingRef.current = true
+      handleRelayV2Invite(invite)
+      return
+    }
+    const offer = decodePairingUrl(data)
+    if (offer) {
+      processingRef.current = true
+      void testAndSaveLan(offer)
+      return
+    }
 
-      const offer = decodePairingUrl(data)
-      if (!offer) {
-        setStatus('error')
-        setErrorMessage('Not a valid Orca QR code')
-        processingRef.current = false
-        return
-      }
-
-      void testAndSave(offer)
-    },
-    [router]
-  )
+    setStatus('error')
+    setErrorMessage('Not a valid Orca QR code')
+    processingRef.current = false
+  }, [])
 
   const handlePasteSubmit = useCallback((input: string) => {
     setPasteVisible(false)
     if (processingRef.current) {
       return
     }
-    processingRef.current = true
+    const trimmed = input.trim()
 
-    const offer = parsePairingCode(input)
-    if (!offer) {
-      setStatus('error')
-      setErrorMessage('Not a valid pairing code — copy it from your computer and paste again')
-      processingRef.current = false
+    const invite = decodeRelayV2Invite(trimmed)
+    if (invite) {
+      processingRef.current = true
+      handleRelayV2Invite(invite)
+      return
+    }
+    if (trimmed.startsWith(RELAY_CERTIFICATE_TOKEN_PREFIX)) {
+      void openCertificateToken(trimmed)
+      return
+    }
+    const offer = parsePairingCode(trimmed)
+    if (offer) {
+      processingRef.current = true
+      void testAndSaveLan(offer)
       return
     }
 
-    void testAndSave(offer)
+    setStatus('error')
+    setErrorMessage('Not a valid pairing code or relay invite')
   }, [])
 
   const handleCameraLayout = useCallback((event: LayoutChangeEvent) => {
@@ -112,113 +139,120 @@ export default function PairScanScreen() {
     setCameraBounds((cur) => (cur.width === next.width && cur.height === next.height ? cur : next))
   }, [])
 
-  async function testAndSave(offer: PairingOffer) {
+  function handleRelayV2Invite(invite: RelayInviteV2Payload): void {
+    relayV2InviteRef.current = invite
+    setConnectionKind('relay')
+    setCertificateNotice('')
+    setCertificateError('')
+    setNoticeMessage('')
+    if (invite.serverCaDerB64 !== 'unavailable' && invite.serverCaSha256 !== 'unavailable') {
+      setStatus('certificate-required')
+      processingRef.current = false
+      return
+    }
+    void testAndSaveRelay(invite)
+  }
+
+  async function openCertificateToken(token: string): Promise<void> {
+    const result = await openRelayCertificateToken(token)
+    if (result === 'opened') {
+      setStatus('scanning')
+      setErrorMessage('')
+      setNoticeMessage(
+        'Certificate profile opened. Finish installation in Settings, enable Full Trust, then scan again.'
+      )
+      processingRef.current = false
+      return
+    }
+    setStatus('error')
+    setErrorMessage(
+      result === 'invalid'
+        ? 'Not a valid certificate token'
+        : 'Could not open the certificate profile'
+    )
+    processingRef.current = false
+  }
+
+  async function openRelayV2CertificateProfile(): Promise<void> {
+    const invite = relayV2InviteRef.current
+    if (!invite) {
+      return
+    }
+    if ((await openRelayV2CertificateProfileFile(invite)) === 'opened') {
+      setCertificateError('')
+      setCertificateNotice(
+        'Profile opened. Finish installation in Settings, enable Full Trust, then continue.'
+      )
+      return
+    }
+    setCertificateNotice('')
+    setCertificateError('Could not open the certificate profile')
+  }
+
+  async function testAndSaveLan(offer: PairingOffer) {
+    setConnectionKind('lan')
     setStatus('connecting')
+    setNoticeMessage('')
+    resetLogs()
+    activePairingAttemptRef.current?.dispose()
+    handleFlowResult(await connectAndSaveLanPairing({ offer, hooks: createAttemptHooks() }))
+  }
+
+  async function testAndSaveRelay(invite: RelayInviteV2Payload) {
+    setConnectionKind('relay')
+    setStatus('connecting')
+    setNoticeMessage('')
+    resetLogs()
+    activePairingAttemptRef.current?.dispose()
+    handleFlowResult(await connectAndSaveRelayV2({ invite, hooks: createAttemptHooks() }))
+  }
+
+  function createAttemptHooks() {
+    return {
+      setActiveAttempt: (attempt: PairingConnectionAttempt) => {
+        activePairingAttemptRef.current = attempt
+      },
+      clearActiveAttempt: (attempt: PairingConnectionAttempt) => {
+        if (activePairingAttemptRef.current === attempt) {
+          activePairingAttemptRef.current = null
+        }
+      },
+      isActiveAttempt: (attempt: PairingConnectionAttempt) =>
+        activePairingAttemptRef.current === attempt,
+      isMounted: () => mountedRef.current,
+      onLog: (entry: ConnectionLogEntry) => {
+        logsRef.current = [...logsRef.current, entry]
+        setLogs(logsRef.current)
+      }
+    }
+  }
+
+  function handleFlowResult(result: LanPairingFlowResult | AddRelayFlowResult): void {
+    if (result.type === 'cancelled') {
+      return
+    }
+    if (result.type === 'saved') {
+      router.replace(`/h/${result.hostId}`)
+      return
+    }
+    setStatus('error')
+    setErrorMessage(result.message)
+    processingRef.current = false
+  }
+
+  function resetLogs(): void {
     logsRef.current = []
     setLogs([])
-    let client: ReturnType<typeof connect> | null = null
-    activePairingAttemptRef.current?.dispose()
-
-    // Why: split the try/catch around the network call vs the local save
-    // so a Keychain or AsyncStorage failure doesn't masquerade as a
-    // "Cannot connect — same network?" error. Pairing reached the
-    // desktop fine; the failure is local persistence.
-    let response: RpcResponse
-    const attempt = startPairingConnectionAttempt({
-      timeoutMs: PAIRING_OVERALL_TIMEOUT_MS,
-      closeClient: () => client?.close()
-    })
-    activePairingAttemptRef.current = attempt
-    try {
-      client = connect(offer.endpoint, offer.deviceToken, offer.publicKeyB64, {
-        onLog: (entry) => {
-          if (!mountedRef.current || activePairingAttemptRef.current !== attempt) {
-            return
-          }
-          logsRef.current = [...logsRef.current, entry]
-          setLogs(logsRef.current)
-        }
-      })
-      response = await client.sendRequest('status.get')
-      const attemptIsCurrent = activePairingAttemptRef.current === attempt
-      attempt.dispose()
-      if (activePairingAttemptRef.current === attempt) {
-        activePairingAttemptRef.current = null
-      }
-      if (!mountedRef.current || !attemptIsCurrent) {
-        return
-      }
-    } catch (err) {
-      const timedOut = attempt.timedOut
-      const attemptIsCurrent = activePairingAttemptRef.current === attempt
-      attempt.dispose()
-      if (activePairingAttemptRef.current === attempt) {
-        activePairingAttemptRef.current = null
-      }
-      if (!mountedRef.current || !attemptIsCurrent) {
-        return
-      }
-      console.warn('[pair] connect failed', err)
-      setStatus('error')
-      setErrorMessage(
-        timedOut
-          ? `Couldn't connect within ${PAIRING_OVERALL_TIMEOUT_MS / 1000}s — see log below for where it stalled`
-          : 'Cannot connect — check that your computer is on the same network'
-      )
-      processingRef.current = false
-      return
-    }
-
-    if (!response.ok) {
-      if (!mountedRef.current) {
-        return
-      }
-      if (response.error.code === 'unauthorized') {
-        setStatus('error')
-        setErrorMessage('Authentication failed — token may be expired')
-        processingRef.current = false
-        return
-      }
-      setStatus('error')
-      setErrorMessage(`Server error: ${response.error.message}`)
-      processingRef.current = false
-      return
-    }
-
-    try {
-      const hostId = `host-${Date.now()}`
-      const hostName = await getNextHostName()
-      await saveHost({
-        id: hostId,
-        name: hostName,
-        endpoint: offer.endpoint,
-        deviceToken: offer.deviceToken,
-        publicKeyB64: offer.publicKeyB64,
-        lastConnected: Date.now(),
-        kind: 'lan'
-      })
-      if (!mountedRef.current) {
-        return
-      }
-      router.replace(`/h/${hostId}`)
-    } catch (err) {
-      if (!mountedRef.current) {
-        return
-      }
-      console.warn('[pair] save failed', err)
-      setStatus('error')
-      setErrorMessage(
-        `Pairing succeeded but couldn't save the host: ${err instanceof Error ? err.message : String(err)}`
-      )
-      processingRef.current = false
-    }
   }
 
   function retry() {
     setStatus('scanning')
     setErrorMessage('')
-    logsRef.current = []
-    setLogs([])
+    setNoticeMessage('')
+    setCertificateNotice('')
+    setCertificateError('')
+    relayV2InviteRef.current = null
+    resetLogs()
     processingRef.current = false
   }
 
@@ -235,6 +269,25 @@ export default function PairScanScreen() {
     Math.round(Math.min(cameraBounds.width, cameraBounds.height) * SCAN_RETICLE_SCALE),
     SCAN_RETICLE_MAX_SIZE
   )
+
+  if (status === 'certificate-required' && relayV2InviteRef.current) {
+    return (
+      <View ref={setPairScanRootRef} style={styles.routeRoot}>
+        <RelayV2CertificateScreen
+          containerPadding={containerPadding}
+          invite={relayV2InviteRef.current}
+          notice={certificateNotice}
+          error={certificateError}
+          onBack={() => {
+            relayV2InviteRef.current = null
+            setStatus('scanning')
+          }}
+          onInstall={() => void openRelayV2CertificateProfile()}
+          onContinue={() => void testAndSaveRelay(relayV2InviteRef.current!)}
+        />
+      </View>
+    )
+  }
 
   if (!permission) {
     return (
@@ -253,12 +306,12 @@ export default function PairScanScreen() {
         </Pressable>
         <View style={styles.centered}>
           <Text style={styles.title}>
-            {canAskAgain ? 'Pair with desktop' : 'Camera Access Disabled'}
+            {canAskAgain ? 'Scan Orca QR' : 'Camera Access Disabled'}
           </Text>
           <Text style={styles.subtitle}>
             {canAskAgain
-              ? 'Scan the QR code from Orca on your desktop, or paste the pairing code instead.'
-              : 'Enable camera access in Settings, or paste the pairing code instead.'}
+              ? 'Scan the QR code from Orca on your desktop, or paste the code instead.'
+              : 'Enable camera access in Settings, or paste the code instead.'}
           </Text>
           <Pressable
             style={styles.primaryButton}
@@ -274,14 +327,14 @@ export default function PairScanScreen() {
             onPress={() => setPasteVisible(true)}
           >
             <ClipboardIcon size={16} color={colors.textSecondary} />
-            <Text style={styles.pasteButtonText}>Paste code instead</Text>
+            <Text style={styles.pasteButtonText}>Paste code</Text>
           </Pressable>
         </View>
         <TextInputModal
           visible={pasteVisible}
-          title="Paste pairing code"
-          message="Copy the code shown under the QR on your computer."
-          placeholder="orca://pair?code=... or paste the code"
+          title="Paste Orca code"
+          message="Copy the pairing code or relay invite from your computer."
+          placeholder="orca://pair?code=... or relay invite"
           onSubmit={handlePasteSubmit}
           onCancel={() => setPasteVisible(false)}
         />
@@ -298,7 +351,7 @@ export default function PairScanScreen() {
       <View style={styles.steps}>
         <Step number={1} text="Open Orca on your computer" />
         <Step number={2} text="Go to Settings → Mobile" />
-        <Step number={3} text="Scan the QR code" />
+        <Step number={3} text="Scan the Orca QR code" />
       </View>
 
       {status === 'scanning' && (
@@ -332,17 +385,23 @@ export default function PairScanScreen() {
             onPress={() => setPasteVisible(true)}
           >
             <ClipboardIcon size={16} color={colors.textSecondary} />
-            <Text style={styles.pasteButtonText}>Or paste pairing code</Text>
+            <Text style={styles.pasteButtonText}>Paste code or relay invite</Text>
           </Pressable>
+          {noticeMessage ? <Text style={styles.noticeText}>{noticeMessage}</Text> : null}
         </>
       )}
 
       {status === 'connecting' && (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={colors.textSecondary} />
-          <Text style={styles.connectingText}>Connecting…</Text>
+          <Text style={styles.connectingText}>
+            {connectionKind === 'relay' ? 'Connecting through relay...' : 'Connecting...'}
+          </Text>
           <View style={styles.logSlot}>
-            <ConnectionLog entries={logs} title="Pairing log" />
+            <ConnectionLog
+              entries={logs}
+              title={connectionKind === 'relay' ? 'Relay log' : 'Pairing log'}
+            />
           </View>
         </View>
       )}
@@ -352,7 +411,10 @@ export default function PairScanScreen() {
           <Text style={styles.errorText}>{errorMessage}</Text>
           {logs.length > 0 && (
             <View style={styles.logSlot}>
-              <ConnectionLog entries={logs} title="Pairing log" />
+              <ConnectionLog
+                entries={logs}
+                title={connectionKind === 'relay' ? 'Relay log' : 'Pairing log'}
+              />
             </View>
           )}
           <View style={styles.errorActions}>
@@ -369,7 +431,7 @@ export default function PairScanScreen() {
                 setPasteVisible(true)
               }}
             >
-              <Text style={styles.secondaryButtonText}>Paste code instead</Text>
+              <Text style={styles.secondaryButtonText}>Paste code</Text>
             </Pressable>
           </View>
         </View>
@@ -377,195 +439,12 @@ export default function PairScanScreen() {
 
       <TextInputModal
         visible={pasteVisible}
-        title="Paste pairing code"
-        message="Copy the code shown under the QR on your computer."
-        placeholder="orca://pair?code=... or paste the code"
+        title="Paste Orca code"
+        message="Copy the pairing code or relay invite from your computer."
+        placeholder="orca://pair?code=... or relay invite"
         onSubmit={handlePasteSubmit}
         onCancel={() => setPasteVisible(false)}
       />
     </View>
   )
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.bgBase,
-    padding: spacing.lg
-  },
-  backButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.sm
-  },
-  steps: {
-    gap: spacing.sm,
-    marginBottom: spacing.lg,
-    marginLeft: 7
-  },
-  step: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm
-  },
-  stepBadge: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: colors.bgRaised,
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  stepNumber: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.textSecondary
-  },
-  stepText: {
-    fontSize: typography.bodySize,
-    color: colors.textSecondary
-  },
-  cameraWrap: {
-    flex: 1,
-    borderRadius: radii.camera,
-    overflow: 'hidden'
-  },
-  // Why: holds the layout slot while the camera is unmounted during
-  // paste, so the bottom action button doesn't snap up to fill the
-  // empty space.
-  cameraPlaceholder: {
-    flex: 1,
-    backgroundColor: colors.bgPanel,
-    borderRadius: radii.camera
-  },
-  camera: {
-    ...StyleSheet.absoluteFillObject
-  },
-  reticle: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  reticleFrame: {
-    position: 'relative'
-  },
-  corner: {
-    position: 'absolute',
-    width: 28,
-    height: 28,
-    borderColor: 'rgba(255,255,255,0.7)'
-  },
-  cornerTL: {
-    top: 0,
-    left: 0,
-    borderTopWidth: 2.5,
-    borderLeftWidth: 2.5,
-    borderTopLeftRadius: 6
-  },
-  cornerTR: {
-    top: 0,
-    right: 0,
-    borderTopWidth: 2.5,
-    borderRightWidth: 2.5,
-    borderTopRightRadius: 6
-  },
-  cornerBL: {
-    bottom: 0,
-    left: 0,
-    borderBottomWidth: 2.5,
-    borderLeftWidth: 2.5,
-    borderBottomLeftRadius: 6
-  },
-  cornerBR: {
-    bottom: 0,
-    right: 0,
-    borderBottomWidth: 2.5,
-    borderRightWidth: 2.5,
-    borderBottomRightRadius: 6
-  },
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  title: {
-    fontSize: typography.titleSize,
-    fontWeight: '600',
-    color: colors.textPrimary,
-    marginBottom: spacing.sm
-  },
-  subtitle: {
-    maxWidth: 310,
-    fontSize: typography.bodySize,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    marginBottom: spacing.xl,
-    lineHeight: 20
-  },
-  connectingText: {
-    color: colors.textSecondary,
-    fontSize: typography.bodySize,
-    marginTop: spacing.lg
-  },
-  logSlot: {
-    width: '100%',
-    marginTop: spacing.lg,
-    paddingHorizontal: spacing.sm
-  },
-  errorText: {
-    color: colors.statusRed,
-    fontSize: typography.bodySize,
-    textAlign: 'center',
-    marginBottom: spacing.xl,
-    lineHeight: 20
-  },
-  primaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    backgroundColor: colors.textPrimary,
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.sm + 2,
-    borderRadius: radii.button
-  },
-  primaryButtonText: {
-    color: colors.bgBase,
-    fontSize: typography.bodySize,
-    fontWeight: '600'
-  },
-  pasteButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    marginTop: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radii.button
-  },
-  pasteButtonPressed: {
-    opacity: 0.6
-  },
-  pasteButtonText: {
-    color: colors.textSecondary,
-    fontSize: typography.bodySize,
-    fontWeight: '500'
-  },
-  errorActions: {
-    alignItems: 'center',
-    gap: spacing.sm
-  },
-  secondaryButton: {
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.sm,
-    borderRadius: radii.button
-  },
-  secondaryButtonText: {
-    color: colors.textSecondary,
-    fontSize: typography.bodySize,
-    fontWeight: '500'
-  }
-})

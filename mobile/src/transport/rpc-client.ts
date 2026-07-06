@@ -14,16 +14,13 @@ import {
   decrypt,
   decryptBytes
 } from './e2ee'
+import type { BrowserScreencastFrame } from './browser-screencast-protocol'
 import {
-  decodeBrowserScreencastFrame,
-  type BrowserScreencastFrame
-} from './browser-screencast-protocol'
-import {
-  dispatchTerminalBinaryFrame,
   isTerminalSubscribedResult,
   isBrowserScreencastReadyResult,
   type TerminalSnapshotState
 } from './rpc-client-frame-decoding'
+import { createRpcClientBinaryHandler } from './rpc-client-binary-handler'
 import {
   buildTerminalUnsubscribeParams,
   updateTerminalSubscriptionViewport as updateCachedTerminalSubscriptionViewport
@@ -32,6 +29,13 @@ import { describeSocketEvent } from './socket-event-debug'
 import { RelayCloseCode, encodeClientJoin, parseRelayControlFrame } from './relay-protocol'
 import { isRpcResponse } from './rpc-response-shape'
 import { websocketPayloadToUint8 } from './websocket-payload-bytes'
+import { websocketCloseLogDetail } from './websocket-close-log-detail'
+import {
+  startRelayV2PreHandshake,
+  type RelayV2ConnectOptions,
+  type RelayV2PreHandshake
+} from './relay-v2-prehandshake'
+import { redactedEndpoint } from './redacted-endpoint'
 
 type PendingRequest = {
   resolve: (response: RpcResponse) => void
@@ -158,6 +162,9 @@ export type ConnectOptions = {
   onLog?: ConnectionLogSink
   // When set, run the relay pre-handshake before the E2EE flow.
   relay?: RelayConnectOptions
+  // Relay v2 uses PC-led channels. The mobile socket first binds/resumes with
+  // the relay server, then starts the same desktop E2EE/RPC handshake.
+  relayV2?: RelayV2ConnectOptions
 }
 
 export function connect(
@@ -176,6 +183,7 @@ export function connect(
   // Why: relay mode runs an extra client-join → room-ready step on top of the
   // shared E2EE handshake. null = direct LAN host (no pre-handshake).
   const relayMobileToken = options.relay?.mobileToken ?? null
+  const relayV2 = options.relayV2 ?? null
   let logCounter = 0
   function emitLog(level: ConnectionLogLevel, message: string, detail?: string) {
     if (!onLog) {
@@ -197,6 +205,7 @@ export function connect(
   let connectTimer: ReturnType<typeof setTimeout> | null = null
   let handshakeTimer: ReturnType<typeof setTimeout> | null = null
   let relayJoinTimer: ReturnType<typeof setTimeout> | null = null
+  let relayV2PreHandshake: RelayV2PreHandshake | null = null
   let activityProbeTimer: ReturnType<typeof setInterval> | null = null
   let intentionallyClosed = false
   // Why: consecutive auth rejections since the last successful connect. We
@@ -225,6 +234,13 @@ export function connect(
   const terminalSnapshots = new Map<number, TerminalSnapshotState>()
   let activeBrowserScreencastRequestId: string | null = null
   let pendingBrowserScreencastRequestId: string | null = null
+  const handleBinaryFrame = createRpcClientBinaryHandler({
+    streamListeners,
+    terminalStreamListeners,
+    terminalSnapshots,
+    getActiveBrowserScreencastRequestId: () => activeBrowserScreencastRequestId,
+    recordValidatedInboundTraffic
+  })
   const stateListeners = new Set<(state: ConnectionState) => void>()
   const connectWaiters: ConnectWaiter[] = []
 
@@ -284,17 +300,6 @@ export function connect(
     }
     for (const listener of stateListeners) {
       listener(next)
-    }
-  }
-
-  // Why: don't dump device tokens / full URLs into log scrolls; truncate to
-  // the host:port so reconnect lifecycles are still readable.
-  function redactedEndpoint(ep: string): string {
-    try {
-      const m = ep.match(/^wss?:\/\/([^/]+)/i)
-      return m ? m[1] : 'unknown'
-    } catch {
-      return 'unknown'
     }
   }
 
@@ -442,9 +447,30 @@ export function connect(
       if (ignoreStaleSocketEvent('open')) {
         return
       }
-      console.log('[net] ws.onopen', { attempt: reconnectAttempt, relay: !!relayMobileToken })
+      console.log('[net] ws.onopen', { attempt: reconnectAttempt })
       clearConnectTimer()
-      reconnectAttempt = 0
+
+      if (relayV2) {
+        setState('handshaking')
+        emitLog(
+          'success',
+          'WebSocket open',
+          relayV2.mode === 'join' ? 'Joining relay v2 channel' : 'Resuming relay v2 channel'
+        )
+        relayV2PreHandshake = startRelayV2PreHandshake({
+          ws: openingWs,
+          relayV2,
+          timeoutMs: RELAY_JOIN_TIMEOUT_MS,
+          emitLog,
+          onTimeout: () => {
+            if (ws === openingWs) {
+              openingWs.close()
+            }
+          },
+          beginE2EEHandshake
+        })
+        return
+      }
 
       if (relayMobileToken) {
         // Why: relay hosts must claim the room before any E2EE bytes flow.
@@ -511,6 +537,15 @@ export function connect(
         return
       }
 
+      if (relayV2PreHandshake?.isAwaiting()) {
+        if (raw !== null) {
+          if (relayV2PreHandshake.handleText(raw)) {
+            return
+          }
+        }
+        return
+      }
+
       // Why: during handshaking, e2ee_ready is plaintext because it precedes
       // encrypted auth; e2ee_authenticated/e2ee_error are encrypted.
       if (state === 'handshaking') {
@@ -547,6 +582,9 @@ export function connect(
             console.log('[net] e2ee_authenticated — connected', {
               streamCount: streamListeners.size
             })
+            // Why: for relay links, WebSocket open only proves the relay is
+            // reachable. Reset backoff after E2EE auth proves the PC path works.
+            reconnectAttempt = 0
             setState('connected')
             emitLog('success', 'Authenticated', 'Channel ready for RPC')
             startActivityProbe()
@@ -748,7 +786,7 @@ export function connect(
       })
       lastWsClosedAt = closeAt
       currentWsOpenedAt = null
-      handleSocketClosed(openingWs, { code: e?.code })
+      handleSocketClosed(openingWs, { code: e?.code, reason: e?.reason })
     }
 
     ws.onerror = (event) => {
@@ -767,12 +805,13 @@ export function connect(
         eventKeys: errEvent.keys,
         eventStr: errEvent.json
       })
+      emitLog('error', 'WebSocket error', e?.message ?? errEvent.json)
     }
   }
 
   function handleSocketClosed(
     closedWs: WebSocket,
-    opts: { timedOut?: boolean; code?: number } = {}
+    opts: { timedOut?: boolean; code?: number; reason?: string } = {}
   ) {
     if (ws !== closedWs) {
       console.log('[net] handleSocketClosed STALE — ignoring (ws already swapped)', {
@@ -795,6 +834,8 @@ export function connect(
       clearTimeout(relayJoinTimer)
       relayJoinTimer = null
     }
+    relayV2PreHandshake?.clear()
+    relayV2PreHandshake = null
     stopActivityProbe()
     if (intentionallyClosed) {
       console.log('[net] handleSocketClosed — intentional close')
@@ -829,7 +870,7 @@ export function connect(
       streamCount: streamListeners.size,
       attempt: reconnectAttempt
     })
-    emitLog('warn', 'WebSocket closed', 'Will attempt to reconnect')
+    emitLog('warn', 'WebSocket closed', websocketCloseLogDetail(opts.reason))
     rejectAllPending('Connection interrupted')
     setState('reconnecting')
     scheduleReconnect()
@@ -1036,32 +1077,6 @@ export function connect(
 
   function recordValidatedInboundTraffic(): void {
     inboundSequence++
-  }
-
-  function handleBinaryFrame(bytes: Uint8Array): void {
-    const browserFrame = decodeBrowserScreencastFrame(bytes)
-    if (browserFrame) {
-      recordValidatedInboundTraffic()
-      handleBrowserBinaryFrame(browserFrame)
-      return
-    }
-    dispatchTerminalBinaryFrame(
-      bytes,
-      terminalStreamListeners,
-      terminalSnapshots,
-      recordValidatedInboundTraffic
-    )
-  }
-
-  function handleBrowserBinaryFrame(frame: BrowserScreencastFrame) {
-    if (!activeBrowserScreencastRequestId) {
-      return
-    }
-    const stream = streamListeners.get(activeBrowserScreencastRequestId)
-    if (!stream || stream.cancelled || stream.method !== 'browser.screencast') {
-      return
-    }
-    stream.onBinaryFrame?.(frame)
   }
 
   function sendEncrypted(request: unknown): boolean {
@@ -1300,6 +1315,8 @@ export function connect(
         clearTimeout(relayJoinTimer)
         relayJoinTimer = null
       }
+      relayV2PreHandshake?.clear()
+      relayV2PreHandshake = null
       stopActivityProbe()
       if (ws) {
         ws.close()

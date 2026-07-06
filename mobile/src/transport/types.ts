@@ -61,11 +61,10 @@ export type ConnectionState =
   // re-pair on the PC to reclaim the slot.
   | 'occupied'
 
-// Why: 'lan' hosts dial a LAN/Tailnet WebSocket directly; 'relay' hosts dial an
-// outbound relay and run a client-join → room-ready pre-handshake before the
-// shared E2EE flow. For relay hosts `endpoint` holds the relay URL, and the
-// `mobileToken` (credential, kept in the keychain) + `roomId` identify the room.
-export type HostKind = 'lan' | 'relay'
+// Why: 'lan' hosts dial a LAN/Tailnet WebSocket directly; relay hosts dial an
+// outbound relay and run a pre-handshake before the shared E2EE flow. v1 uses
+// client-join + mobileToken; v2 uses mobile-resume + resumeToken.
+export type HostKind = 'lan' | 'relay' | 'relay-v2'
 
 export type HostProfile = {
   id: string
@@ -75,8 +74,12 @@ export type HostProfile = {
   publicKeyB64: string
   lastConnected: number
   kind: HostKind
+  pcId?: string
+  mobileDeviceId?: string
   mobileToken?: string
   roomId?: string
+  resumeTokenExpiresAt?: number
+  serverCaSha256?: string
 }
 
 export const HostProfileSchema = z
@@ -89,13 +92,24 @@ export const HostProfileSchema = z
     lastConnected: z.number().finite(),
     // Why: records written before relay support lack `kind`; default to 'lan'
     // so existing LAN hosts keep working without a migration pass.
-    kind: z.enum(['lan', 'relay']).default('lan'),
+    kind: z.enum(['lan', 'relay', 'relay-v2']).default('lan'),
+    pcId: z.string().min(1).optional(),
+    mobileDeviceId: z.string().min(1).optional(),
     mobileToken: z.string().min(1).optional(),
-    roomId: z.string().min(1).optional()
+    roomId: z.string().min(1).optional(),
+    resumeTokenExpiresAt: z.number().finite().optional(),
+    serverCaSha256: z.string().min(1).optional()
   })
   .refine((host) => host.kind !== 'relay' || (!!host.mobileToken && !!host.roomId), {
     message: 'relay hosts require mobileToken and roomId'
   })
+  .refine(
+    (host) =>
+      host.kind !== 'relay-v2' || (!!host.mobileToken && !!host.pcId && !!host.mobileDeviceId),
+    {
+      message: 'relay-v2 hosts require resume token, pcId, and mobileDeviceId'
+    }
+  )
 
 // Why: persisted host record after the v0.0.3 keychain split. The deviceToken
 // (and, for relay hosts, the mobileToken) are held in the iOS Keychain via
@@ -107,8 +121,12 @@ export const StoredHostProfileSchema = z.object({
   endpoint: z.string().min(1),
   publicKeyB64: z.string().min(1),
   lastConnected: z.number().finite(),
-  kind: z.enum(['lan', 'relay']).default('lan'),
-  roomId: z.string().min(1).optional()
+  kind: z.enum(['lan', 'relay', 'relay-v2']).default('lan'),
+  pcId: z.string().min(1).optional(),
+  mobileDeviceId: z.string().min(1).optional(),
+  roomId: z.string().min(1).optional(),
+  resumeTokenExpiresAt: z.number().finite().optional(),
+  serverCaSha256: z.string().min(1).optional()
 })
 
 export type StoredHostProfile = z.infer<typeof StoredHostProfileSchema>

@@ -1,15 +1,26 @@
-import { ipcMain } from 'electron'
-import { networkInterfaces } from 'node:os'
+import { BrowserWindow, app, ipcMain, shell } from 'electron'
+import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { homedir, networkInterfaces } from 'node:os'
+import { join } from 'node:path'
+import { promisify } from 'node:util'
 import QRCode from 'qrcode'
+import { decodeRelayCertificateToken } from '../../shared/relay-certificate-token'
+import type { DesktopRelayV2Status } from '../../shared/relay-v2-desktop'
+import { encodeRelayV2InviteQrPayload } from '../../shared/relay-v2-invite-qr'
 import type { RuntimeAccessGrant } from '../../shared/runtime-access-grants'
 import { isTailnetIPv4Address } from '../../shared/tailnet-address'
 import type { DeviceEntry } from '../runtime/device-registry'
 import type { OrcaRuntimeRpcServer } from '../runtime/runtime-rpc'
+import { discoverRelayCertificateToken } from './relay-certificate-discovery'
 
 export type NetworkInterface = {
   name: string
   address: string
 }
+
+const execFileAsync = promisify(execFile)
 
 // Why: the WebSocket transport advertises 0.0.0.0 as its endpoint, which isn't
 // connectable from a mobile device. We enumerate all non-internal IPv4
@@ -52,6 +63,15 @@ function toRuntimeAccessGrant(device: DeviceEntry): RuntimeAccessGrant {
 // OrcaRuntimeRpcServer because it owns the device registry and TLS state.
 
 export function registerMobileHandlers(rpcServer: OrcaRuntimeRpcServer): void {
+  const relayV2StatusChange = getRelayV2StatusChangeSource(rpcServer)
+  if (relayV2StatusChange) {
+    relayV2StatusChange((status) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send('mobile:v2:statusChanged', status)
+      }
+    })
+  }
+
   ipcMain.handle('mobile:listNetworkInterfaces', (): { interfaces: NetworkInterface[] } => ({
     interfaces: getNetworkInterfaces()
   }))
@@ -190,53 +210,127 @@ export function registerMobileHandlers(rpcServer: OrcaRuntimeRpcServer): void {
     }
   })
 
-  // Why: relay bridge config. The pcToken is the bearer credential for the
-  // host slot; the server validates + persists it to a hardened file and dials
-  // the relay. getRelayServerToken returns the out-of-band E2EE identity (the
-  // desktop public key + a relay-scoped device token) the phone needs to trust
-  // the tunnel — this is the payload behind the "Server Token" QR.
-  ipcMain.handle('mobile:setRelayConfig', async (_event, args: { pcToken: string }) => {
-    const pcToken = typeof args?.pcToken === 'string' ? args.pcToken.trim() : ''
-    if (!pcToken) {
-      return { ok: false as const, status: rpcServer.getRelayStatus() }
-    }
-    const status = await rpcServer.setRelayConfig(pcToken)
-    return { ok: status.state !== 'unauthorized', status }
+  ipcMain.handle('mobile:v2:getSettings', () => rpcServer.getRelayV2Settings())
+
+  ipcMain.handle('mobile:v2:saveRelayUrl', async (_event, args: { relayUrl: string }) => {
+    const relayUrl = typeof args?.relayUrl === 'string' ? args.relayUrl.trim() : ''
+    return rpcServer.saveRelayV2Url(relayUrl)
   })
 
-  ipcMain.handle('mobile:clearRelayConfig', async () => {
-    await rpcServer.clearRelayConfig()
+  ipcMain.handle('mobile:v2:clearSettings', async () => {
+    await rpcServer.clearRelayV2Settings()
     return { ok: true as const }
   })
 
-  ipcMain.handle('mobile:getRelayStatus', () => {
-    return { status: rpcServer.getRelayStatus() }
+  ipcMain.handle('mobile:v2:getStatus', () => rpcServer.getRelayV2Status())
+
+  ipcMain.handle(
+    'mobile:v2:createInvite',
+    async (_event, args: { mode: 'keep-existing' | 'disconnect-existing' }) => {
+      const mode = args?.mode === 'disconnect-existing' ? 'disconnect-existing' : 'keep-existing'
+      const result = await rpcServer.createRelayV2Invite(mode)
+      if (!result.ok) {
+        return result
+      }
+      const qrScanPayload = encodeRelayV2InviteQrPayload(result.invite.qrPayload)
+      const qrDataUrl = await QRCode.toDataURL(qrScanPayload, {
+        errorCorrectionLevel: 'L',
+        margin: 3,
+        width: 360
+      })
+      return {
+        ...result,
+        invite: {
+          ...result.invite,
+          qrScanPayload,
+          qrDataUrl
+        }
+      }
+    }
+  )
+
+  ipcMain.handle('mobile:v2:installCertificateToken', async (_event, args: { token: string }) => {
+    return installRelayCertificateToken(args, rpcServer)
   })
 
-  ipcMain.handle('mobile:getRelayServerToken', async () => {
-    const info = rpcServer.getRelayPairingInfo()
-    if (!info.available) {
-      return { available: false as const }
+  ipcMain.handle(
+    'mobile:v2:installDiscoveredCertificate',
+    async (_event, args: { relayUrl: string }) => {
+      const relayUrl = typeof args?.relayUrl === 'string' ? args.relayUrl.trim() : ''
+      const discovery = await discoverRelayCertificateToken(relayUrl)
+      if (!discovery.ok) {
+        return discovery
+      }
+      return installRelayCertificateToken({ token: discovery.token }, rpcServer)
     }
-    // Why: the QR encodes ONLY the out-of-band E2EE identity (public key +
-    // device token). Relay coordinates reach the phone via the mobileToken it
-    // already holds, so the relay never sees the desktop's key.
-    const qrPayload = JSON.stringify({
-      v: 1,
-      publicKeyB64: info.publicKeyB64,
-      deviceToken: info.deviceToken
-    })
-    const qrDataUrl = await QRCode.toDataURL(qrPayload, {
-      errorCorrectionLevel: 'M',
-      margin: 2,
-      width: 256
-    })
-    return {
-      available: true as const,
-      qrDataUrl,
-      publicKeyB64: info.publicKeyB64,
-      deviceToken: info.deviceToken,
-      roomId: info.roomId
+  )
+}
+
+function getRelayV2StatusChangeSource(
+  rpcServer: OrcaRuntimeRpcServer
+): ((listener: (status: DesktopRelayV2Status) => void) => () => void) | null {
+  const candidate = rpcServer as unknown as {
+    onRelayV2StatusChange?: (listener: (status: DesktopRelayV2Status) => void) => () => void
+  }
+  return typeof candidate.onRelayV2StatusChange === 'function'
+    ? candidate.onRelayV2StatusChange.bind(rpcServer)
+    : null
+}
+
+async function installRelayCertificateToken(
+  args: { token: string },
+  rpcServer: OrcaRuntimeRpcServer
+) {
+  const token = typeof args?.token === 'string' ? args.token.trim() : ''
+  const certificate = decodeRelayCertificateToken(token)
+  if (!certificate) {
+    return { ok: false as const, reason: 'invalid-token' as const }
+  }
+  const caCertDer = Buffer.from(certificate.caCertDerB64, 'base64')
+  const digest = createHash('sha256').update(caCertDer).digest('base64')
+  if (digest !== certificate.sha256B64) {
+    return { ok: false as const, reason: 'hash-mismatch' as const }
+  }
+  const dir = join(app.getPath('temp'), 'orca-relay-certificates')
+  await mkdir(dir, { recursive: true })
+  const fileName = `${safeCertificateFileStem(certificate.name)}.cer`
+  const filePath = join(dir, fileName)
+  await writeFile(filePath, caCertDer)
+  const appTrusted = await rpcServer.trustRelayV2Certificate(certificate)
+  if (process.platform === 'darwin') {
+    const systemInstalled = await installCertificateInMacLoginKeychain(filePath)
+    if (systemInstalled || appTrusted) {
+      return { ok: true as const, filePath, installed: systemInstalled, appTrusted }
     }
-  })
+    return { ok: false as const, reason: 'open-failed' as const }
+  }
+  const errorMessage = await shell.openPath(filePath)
+  if (!errorMessage || appTrusted) {
+    return { ok: true as const, filePath, installed: !errorMessage, appTrusted }
+  }
+  return { ok: false as const, reason: 'open-failed' as const }
+}
+
+async function installCertificateInMacLoginKeychain(filePath: string): Promise<boolean> {
+  try {
+    await execFileAsync('/usr/bin/security', [
+      'add-trusted-cert',
+      '-r',
+      'trustRoot',
+      '-k',
+      join(homedir(), 'Library', 'Keychains', 'login.keychain-db'),
+      filePath
+    ])
+    return true
+  } catch {
+    return false
+  }
+}
+
+function safeCertificateFileStem(value: string): string {
+  const safe = value
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return safe || 'orca-relay-ca'
 }

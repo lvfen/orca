@@ -61,8 +61,8 @@ export function decodeRelayToken(token: string): DecodedRelayToken | null {
   }
 }
 
-// Why: the desktop only ever holds a PC token; this rejects a mobile token (or
-// junk) pasted into the Server Token field before any connection attempt.
+// Why: legacy relay host config only accepts PC tokens; reject mobile tokens or
+// junk before any compatibility transport attempts a connection.
 export function decodePcToken(token: string): DecodedRelayToken | null {
   const decoded = decodeRelayToken(token)
   return decoded?.role === 'host' ? decoded : null

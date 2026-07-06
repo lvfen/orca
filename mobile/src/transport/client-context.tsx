@@ -23,6 +23,7 @@ import { connect, type RpcClient } from './rpc-client'
 import { subscribeConnectionRevivalTriggers } from './connection-revival-triggers'
 import { loadHosts } from './host-store'
 import type { ConnectionState, HostProfile } from './types'
+import { resolveRelayConnectOptions } from './relay-connect-options'
 
 type StoreEntry = {
   client: RpcClient
@@ -149,11 +150,7 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
           host.endpoint,
           host.deviceToken,
           host.publicKeyB64,
-          // Why: relay hosts dial the relay URL (host.endpoint) and run the
-          // client-join pre-handshake; the mobileToken authorizes the room.
-          host.kind === 'relay' && host.mobileToken
-            ? { relay: { mobileToken: host.mobileToken } }
-            : undefined
+          resolveRelayConnectOptions(host)
         )
       } catch {
         // Why: connect() can throw synchronously if the public key is

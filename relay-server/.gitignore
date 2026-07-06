@@ -4,4 +4,6 @@ dist/
 *.log
 .env
 .env.local
+remote.properties
+certs/
 coverage/

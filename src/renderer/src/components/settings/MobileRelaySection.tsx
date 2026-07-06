@@ -1,356 +1,379 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, Copy, Globe, Link2Off, Loader2, Maximize2 } from 'lucide-react'
+import { Globe2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { Button } from '../ui/button'
-import { Input } from '../ui/input'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog'
+import type {
+  CreateInviteResult,
+  DesktopRelaySettings,
+  DesktopRelayV2Status,
+  RelayV2CreatedInvite
+} from '@/../../shared/relay-v2-desktop'
+import type { ChannelCreateRequiresConfirmationMessage } from '@/../../shared/relay-v2-protocol'
 import { useMountedRef } from '@/hooks/useMountedRef'
 import { translate } from '@/i18n/i18n'
-import type { RelayStatus } from '@/../../shared/relay-protocol'
-import { isRelayTerminalState, relayStatusTone, type RelayStatusTone } from './mobile-relay-status'
-
-type ServerTokenInfo = {
-  qrDataUrl: string
-  publicKeyB64: string
-  deviceToken: string
-  roomId: string
-}
-
-// Why: relay status is polled (no push channel from the host transport), so the
-// settings pane keeps it fresh while open without holding a socket of its own.
-const STATUS_POLL_MS = 3000
-
-const TONE_DOT: Record<RelayStatusTone, string> = {
-  connected: 'bg-emerald-500',
-  pending: 'bg-amber-500',
-  danger: 'bg-destructive',
-  idle: 'bg-muted-foreground/50'
-}
-
-function statusLabel(status: RelayStatus): string {
-  switch (status.state) {
-    case 'connected':
-      return translate('auto.components.settings.MobileRelaySection.connected', 'Connected')
-    case 'connecting':
-      return translate('auto.components.settings.MobileRelaySection.connecting', 'Connecting…')
-    case 'reconnecting':
-      return translate(
-        'auto.components.settings.MobileRelaySection.reconnecting',
-        'Reconnecting… (attempt {{attempt}})',
-        { attempt: status.attempt }
-      )
-    case 'occupied':
-      return translate('auto.components.settings.MobileRelaySection.occupied', 'Taken over')
-    case 'unauthorized':
-      return translate(
-        'auto.components.settings.MobileRelaySection.unauthorized',
-        'Pairing invalid'
-      )
-    case 'disconnected':
-      return translate('auto.components.settings.MobileRelaySection.disconnected', 'Not connected')
-  }
-}
-
-function terminalMessage(status: RelayStatus): string {
-  return status.state === 'occupied'
-    ? translate(
-        'auto.components.settings.MobileRelaySection.occupiedHint',
-        'Connection taken over — this token is in use on another device. Re-pair to reclaim it.'
-      )
-    : translate(
-        'auto.components.settings.MobileRelaySection.unauthorizedHint',
-        'Pairing no longer valid — generate a fresh token on the relay and re-pair.'
-      )
-}
+import { MobileBindingStatus } from './mobile-relay/MobileBindingStatus'
+import { RebindMobileDialog } from './mobile-relay/RebindMobileDialog'
+import { RelayInviteQrDialog } from './mobile-relay/RelayInviteQrDialog'
+import { RelayServerStatus } from './mobile-relay/RelayServerStatus'
+import { RelayUrlSetting } from './mobile-relay/RelayUrlSetting'
+import {
+  discoveredCertificateErrorMessage,
+  relayInviteErrorMessage
+} from './mobile-relay/relay-error-messages'
 
 export function MobileRelaySection(): React.JSX.Element {
-  const [pcTokenInput, setPcTokenInput] = useState('')
-  const [status, setStatus] = useState<RelayStatus | null>(null)
-  const [serverToken, setServerToken] = useState<ServerTokenInfo | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [qrEnlarged, setQrEnlarged] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const copiedTimerRef = useRef<number | null>(null)
+  const [settings, setSettings] = useState<DesktopRelaySettings | null>(null)
+  const [status, setStatus] = useState<DesktopRelayV2Status | null>(null)
+  const [relayUrlInput, setRelayUrlInput] = useState('')
+  const [certificateTokenInput, setCertificateTokenInput] = useState('')
+  const [savingRelayUrl, setSavingRelayUrl] = useState(false)
+  const [installingCertificate, setInstallingCertificate] = useState(false)
+  const [creatingInvite, setCreatingInvite] = useState(false)
+  const [invite, setInvite] = useState<RelayV2CreatedInvite | null>(null)
+  const [inviteDialogOpen, setInviteDialogOpen] = useState(false)
+  const [rebindMobile, setRebindMobile] = useState<ChannelCreateRequiresConfirmationMessage | null>(
+    null
+  )
+  const [rebindDialogOpen, setRebindDialogOpen] = useState(false)
+  const [copiedInvite, setCopiedInvite] = useState(false)
+  const copiedInviteTimerRef = useRef<number | null>(null)
+  const autoCertificateInstallAttemptRef = useRef<string | null>(null)
   const mountedRef = useMountedRef()
 
-  const refreshStatus = useCallback(async () => {
+  const refreshRelayV2 = useCallback(async () => {
     try {
-      const result = await window.api.mobile.getRelayStatus()
-      if (mountedRef.current) {
-        setStatus(result.status)
+      const [nextSettings, nextStatus] = await Promise.all([
+        window.api.mobileRelayV2.getSettings(),
+        window.api.mobileRelayV2.getStatus()
+      ])
+      if (!mountedRef.current) {
+        return
       }
+      setSettings(nextSettings)
+      setStatus(nextStatus)
+      setRelayUrlInput(nextSettings.relayUrl ?? '')
     } catch {
-      // Status is advisory; a transient IPC failure shouldn't disrupt the pane.
-    }
-  }, [mountedRef])
-
-  const refreshServerToken = useCallback(async () => {
-    try {
-      const result = await window.api.mobile.getRelayServerToken()
       if (mountedRef.current) {
-        setServerToken(result.available ? result : null)
+        toast.error(
+          translate(
+            'auto.components.settings.mobileRelay.loadFailed',
+            'Failed to load relay settings'
+          )
+        )
       }
-    } catch {
-      // Leave the last known token in place on transient failure.
     }
   }, [mountedRef])
 
   useEffect(() => {
-    void refreshStatus()
-    void refreshServerToken()
-    const id = window.setInterval(() => void refreshStatus(), STATUS_POLL_MS)
-    return () => window.clearInterval(id)
-  }, [refreshStatus, refreshServerToken])
+    void refreshRelayV2()
+    return window.api.mobileRelayV2.onStatusChanged((nextStatus) => {
+      if (mountedRef.current) {
+        setStatus(nextStatus)
+      }
+    })
+  }, [mountedRef, refreshRelayV2])
 
   useEffect(
     () => () => {
-      if (copiedTimerRef.current !== null) {
-        window.clearTimeout(copiedTimerRef.current)
+      if (copiedInviteTimerRef.current !== null) {
+        window.clearTimeout(copiedInviteTimerRef.current)
       }
     },
     []
   )
 
-  async function handleSave(): Promise<void> {
-    const pcToken = pcTokenInput.trim()
-    if (!pcToken) {
+  useEffect(() => {
+    const relayUrl = status?.relayUrl
+    if (status?.state !== 'certificate-required' || !relayUrl) {
       return
     }
-    setSaving(true)
+    if (autoCertificateInstallAttemptRef.current === relayUrl) {
+      return
+    }
+    autoCertificateInstallAttemptRef.current = relayUrl
+    void installDiscoveredCertificate(relayUrl)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.relayUrl, status?.state])
+
+  async function saveRelayUrl(): Promise<void> {
+    const relayUrl = relayUrlInput.trim()
+    if (!relayUrl) {
+      return
+    }
+    autoCertificateInstallAttemptRef.current = null
+    setSavingRelayUrl(true)
     try {
-      const result = await window.api.mobile.setRelayConfig({ pcToken })
+      const result = await window.api.mobileRelayV2.saveRelayUrl({ relayUrl })
       if (!mountedRef.current) {
         return
       }
-      setStatus(result.status)
-      if (result.ok) {
-        setPcTokenInput('')
-        await refreshServerToken()
-        toast.success(
-          translate('auto.components.settings.MobileRelaySection.saved', 'Relay token saved')
-        )
-      } else {
+      if (!result.ok) {
         toast.error(
-          translate(
-            'auto.components.settings.MobileRelaySection.invalidToken',
-            'That server token is invalid'
-          )
+          translate('auto.components.settings.mobileRelay.invalidUrl', 'Invalid relay URL')
+        )
+        setStatus(result.status)
+        return
+      }
+      setSettings(result.settings)
+      setStatus(result.status)
+      setRelayUrlInput(result.settings.relayUrl ?? '')
+      toast.success(translate('auto.components.settings.mobileRelay.urlSaved', 'Relay URL saved'))
+    } catch {
+      if (mountedRef.current) {
+        toast.error(
+          translate('auto.components.settings.mobileRelay.saveFailed', 'Failed to save relay URL')
         )
       }
+    } finally {
+      if (mountedRef.current) {
+        setSavingRelayUrl(false)
+      }
+    }
+  }
+
+  async function clearSettings(): Promise<void> {
+    try {
+      await window.api.mobileRelayV2.clearSettings()
+      if (!mountedRef.current) {
+        return
+      }
+      setSettings(null)
+      setStatus(await window.api.mobileRelayV2.getStatus())
+      setRelayUrlInput('')
+      setInvite(null)
+      autoCertificateInstallAttemptRef.current = null
+      toast.success(
+        translate('auto.components.settings.mobileRelay.cleared', 'Relay settings cleared')
+      )
+    } catch {
+      if (mountedRef.current) {
+        toast.error(
+          translate('auto.components.settings.mobileRelay.clearFailed', 'Failed to clear relay')
+        )
+      }
+    }
+  }
+
+  async function installDiscoveredCertificate(relayUrl: string): Promise<void> {
+    setInstallingCertificate(true)
+    try {
+      const result = await window.api.mobileRelayV2.installDiscoveredCertificate({ relayUrl })
+      if (!mountedRef.current) {
+        return
+      }
+      if (result.ok) {
+        if (result.appTrusted) {
+          toast.success(
+            translate(
+              'auto.components.settings.mobileRelay.certificateTrusted',
+              'Relay certificate trusted for Orca. Reconnecting...'
+            )
+          )
+          await reconnectRelay(relayUrl)
+          return
+        }
+        toast.success(
+          translate(
+            'auto.components.settings.mobileRelay.certificateAutoOpened',
+            'Certificate installer opened. Complete installation and trust, then connect again.'
+          )
+        )
+        return
+      }
+      toast.error(discoveredCertificateErrorMessage(result.reason))
     } catch {
       if (mountedRef.current) {
         toast.error(
           translate(
-            'auto.components.settings.MobileRelaySection.saveFailed',
-            'Failed to save token'
+            'auto.components.settings.mobileRelay.certificateAutoFailed',
+            'Could not download the relay certificate'
           )
         )
       }
     } finally {
       if (mountedRef.current) {
-        setSaving(false)
+        setInstallingCertificate(false)
       }
     }
   }
 
-  async function handleClear(): Promise<void> {
+  async function installCertificateToken(): Promise<void> {
+    const token = certificateTokenInput.trim()
+    if (!token) {
+      return
+    }
+    setInstallingCertificate(true)
     try {
-      await window.api.mobile.clearRelayConfig()
+      const result = await window.api.mobileRelayV2.installCertificateToken({ token })
       if (!mountedRef.current) {
         return
       }
-      setServerToken(null)
-      setPcTokenInput('')
-      await refreshStatus()
-      toast.success(
-        translate('auto.components.settings.MobileRelaySection.cleared', 'Relay disconnected')
-      )
+      if (result.ok) {
+        setCertificateTokenInput('')
+        if (result.appTrusted && status?.relayUrl) {
+          toast.success(
+            translate(
+              'auto.components.settings.mobileRelay.certificateTrusted',
+              'Relay certificate trusted for Orca. Reconnecting...'
+            )
+          )
+          await reconnectRelay(status.relayUrl)
+          return
+        }
+        toast.success(
+          translate(
+            'auto.components.settings.mobileRelay.certificateOpened',
+            'Certificate installer opened'
+          )
+        )
+      } else {
+        toast.error(
+          translate(
+            'auto.components.settings.mobileRelay.certificateFailed',
+            'Failed to open certificate token'
+          )
+        )
+      }
     } catch {
       if (mountedRef.current) {
         toast.error(
           translate(
-            'auto.components.settings.MobileRelaySection.clearFailed',
-            'Failed to disconnect'
+            'auto.components.settings.mobileRelay.certificateFailed',
+            'Failed to open certificate token'
           )
         )
+      }
+    } finally {
+      if (mountedRef.current) {
+        setInstallingCertificate(false)
       }
     }
   }
 
-  async function copyDeviceToken(): Promise<void> {
-    if (!serverToken) {
+  async function reconnectRelay(relayUrl: string): Promise<void> {
+    const result = await window.api.mobileRelayV2.saveRelayUrl({ relayUrl })
+    if (!mountedRef.current) {
       return
     }
+    if (!result.ok) {
+      setStatus(result.status)
+      return
+    }
+    setSettings(result.settings)
+    setStatus(result.status)
+    setRelayUrlInput(result.settings.relayUrl ?? '')
+  }
+
+  async function createInvite(mode: 'keep-existing' | 'disconnect-existing'): Promise<void> {
+    setCreatingInvite(true)
     try {
-      await window.api.ui.writeClipboardText(serverToken.deviceToken)
+      const result = await window.api.mobileRelayV2.createInvite({ mode })
       if (!mountedRef.current) {
         return
       }
-      setCopied(true)
-      if (copiedTimerRef.current !== null) {
-        window.clearTimeout(copiedTimerRef.current)
+      handleInviteResult(result)
+    } catch {
+      if (mountedRef.current) {
+        toast.error(
+          translate('auto.components.settings.mobileRelay.inviteFailed', 'Failed to create invite')
+        )
       }
-      copiedTimerRef.current = window.setTimeout(() => {
-        copiedTimerRef.current = null
+    } finally {
+      if (mountedRef.current) {
+        setCreatingInvite(false)
+      }
+    }
+  }
+
+  function handleInviteResult(result: CreateInviteResult): void {
+    setStatus(result.status)
+    if (result.ok) {
+      setInvite(result.invite)
+      setInviteDialogOpen(true)
+      setRebindDialogOpen(false)
+      setRebindMobile(null)
+      return
+    }
+    if (result.reason === 'confirmation-required' && result.existingMobile) {
+      setRebindMobile(result.existingMobile)
+      setRebindDialogOpen(true)
+      return
+    }
+    toast.error(relayInviteErrorMessage(result.reason))
+  }
+
+  async function copyInvite(): Promise<void> {
+    if (!invite) {
+      return
+    }
+    try {
+      await window.api.ui.writeClipboardText(invite.qrScanPayload ?? invite.qrPayloadJson)
+      if (!mountedRef.current) {
+        return
+      }
+      setCopiedInvite(true)
+      if (copiedInviteTimerRef.current !== null) {
+        window.clearTimeout(copiedInviteTimerRef.current)
+      }
+      copiedInviteTimerRef.current = window.setTimeout(() => {
+        copiedInviteTimerRef.current = null
         if (mountedRef.current) {
-          setCopied(false)
+          setCopiedInvite(false)
         }
       }, 2000)
     } catch {
       toast.error(
-        translate('auto.components.settings.MobileRelaySection.copyFailed', 'Failed to copy token')
+        translate('auto.components.settings.mobileRelay.copyFailed', 'Failed to copy invite')
       )
     }
   }
 
-  const configured = serverToken !== null
-  const tone: RelayStatusTone = status ? relayStatusTone(status.state) : 'idle'
-  const terminal = status != null && isRelayTerminalState(status.state)
-
   return (
-    <div className="rounded-lg border border-border/60 p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <Globe className="size-4 text-muted-foreground" />
-        <span className="text-sm font-medium">
-          {translate(
-            'auto.components.settings.MobileRelaySection.title',
-            'Server Token (remote bridge)'
-          )}
-        </span>
-      </div>
-      <p className="text-muted-foreground mb-3 text-xs">
-        {translate(
-          'auto.components.settings.MobileRelaySection.description',
-          'Connect through a self-hosted relay to reach this computer from anywhere — no inbound port and no shared network. Paste the PC token printed by your relay server.'
-        )}
-      </p>
+    <div className="space-y-4">
+      <div className="rounded-lg border border-border/60 p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <Globe2 className="size-4 text-muted-foreground" />
+          <span className="text-sm font-medium">
+            {translate('auto.components.settings.mobileRelay.title', 'Remote relay')}
+          </span>
+        </div>
 
-      {!configured ? (
-        <div className="space-y-2">
-          <Input
-            value={pcTokenInput}
-            onChange={(e) => setPcTokenInput(e.target.value)}
-            placeholder={translate(
-              'auto.components.settings.MobileRelaySection.placeholder',
-              'Paste PC token (orca-pc_…)'
-            )}
-            className="font-mono text-xs"
-            spellCheck={false}
-            autoCapitalize="off"
+        <div className="space-y-4">
+          <RelayUrlSetting
+            relayUrlInput={relayUrlInput}
+            certificateTokenInput={certificateTokenInput}
+            settings={settings}
+            status={status}
+            saving={savingRelayUrl}
+            installingCertificate={installingCertificate}
+            onRelayUrlInputChange={setRelayUrlInput}
+            onCertificateTokenInputChange={setCertificateTokenInput}
+            onSaveRelayUrl={() => void saveRelayUrl()}
+            onClearSettings={() => void clearSettings()}
+            onInstallCertificate={() => void installCertificateToken()}
           />
-          <Button
-            onClick={() => void handleSave()}
-            disabled={saving || !pcTokenInput.trim()}
-            size="sm"
-          >
-            {saving && <Loader2 className="size-3.5 animate-spin" />}
-            {translate('auto.components.settings.MobileRelaySection.connect', 'Save & connect')}
-          </Button>
+          <RelayServerStatus status={status} />
+          <MobileBindingStatus
+            status={status}
+            creatingInvite={creatingInvite}
+            onCreateInvite={() => void createInvite('keep-existing')}
+          />
         </div>
-      ) : (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2">
-            <div className="flex items-center gap-2">
-              <span className={`size-2 shrink-0 rounded-full ${TONE_DOT[tone]}`} />
-              <span className="text-sm font-medium">{status ? statusLabel(status) : ''}</span>
-            </div>
-            <span className="text-muted-foreground text-xs">
-              {status?.phoneOnline
-                ? translate(
-                    'auto.components.settings.MobileRelaySection.phoneOnline',
-                    'Phone online'
-                  )
-                : translate(
-                    'auto.components.settings.MobileRelaySection.phoneOffline',
-                    'Waiting for phone'
-                  )}
-            </span>
-          </div>
+      </div>
 
-          {terminal && status && (
-            <p className="text-destructive text-xs">{terminalMessage(status)}</p>
-          )}
-
-          <div className="flex flex-col items-center gap-3 rounded-lg border border-border/60 py-5">
-            <button
-              type="button"
-              onClick={() => setQrEnlarged(true)}
-              className="group relative cursor-pointer rounded-lg border border-border/60 bg-white p-3"
-            >
-              <img
-                src={serverToken.qrDataUrl}
-                alt={translate(
-                  'auto.components.settings.MobileRelaySection.qrAlt',
-                  'Server Token QR for the Orca mobile app'
-                )}
-                className="size-44"
-              />
-              <Maximize2 className="absolute top-1.5 right-1.5 size-3 text-black/30 can-hover:opacity-0 transition-opacity group-hover:opacity-100" />
-            </button>
-            <p className="text-muted-foreground max-w-xs text-center text-xs">
-              {translate(
-                'auto.components.settings.MobileRelaySection.qrCaption',
-                'Scan this in the Orca mobile app after pasting its mobile token. It carries this computer’s identity so the relay can never impersonate it.'
-              )}
-            </p>
-            <div className="flex w-full max-w-sm flex-col gap-1.5 px-4">
-              <span className="text-muted-foreground text-center text-xs">
-                {translate('auto.components.settings.MobileRelaySection.room', 'Room')}:{' '}
-                <span className="font-mono">{serverToken.roomId}</span>
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void copyDeviceToken()}
-                className="font-mono text-[11px] leading-tight whitespace-normal break-all h-auto py-2 px-3"
-              >
-                <span className="flex-1 text-left">{serverToken.deviceToken}</span>
-                {copied ? (
-                  <Check className="ml-2 size-3.5 shrink-0 text-emerald-500" />
-                ) : (
-                  <Copy className="ml-2 size-3.5 shrink-0" />
-                )}
-              </Button>
-            </div>
-          </div>
-
-          <Button variant="ghost" size="sm" onClick={() => void handleClear()} className="gap-1.5">
-            <Link2Off className="size-3.5" />
-            {translate(
-              'auto.components.settings.MobileRelaySection.repair',
-              'Disconnect / re-pair'
-            )}
-          </Button>
-        </div>
-      )}
-
-      {serverToken && (
-        <Dialog open={qrEnlarged} onOpenChange={setQrEnlarged}>
-          <DialogContent className="sm:max-w-sm">
-            <DialogHeader>
-              <DialogTitle>
-                {translate(
-                  'auto.components.settings.MobileRelaySection.qrDialogTitle',
-                  'Scan with Orca Mobile'
-                )}
-              </DialogTitle>
-            </DialogHeader>
-            <div className="flex flex-col items-center gap-3">
-              <div className="rounded-lg bg-white p-4">
-                <img
-                  src={serverToken.qrDataUrl}
-                  alt={translate(
-                    'auto.components.settings.MobileRelaySection.qrAlt',
-                    'Server Token QR for the Orca mobile app'
-                  )}
-                  className="size-72"
-                />
-              </div>
-              <span className="text-muted-foreground font-mono text-xs">{serverToken.roomId}</span>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <RebindMobileDialog
+        open={rebindDialogOpen}
+        mobile={rebindMobile}
+        reconnecting={creatingInvite}
+        onOpenChange={setRebindDialogOpen}
+        onDisconnectAndRebind={() => void createInvite('disconnect-existing')}
+      />
+      <RelayInviteQrDialog
+        invite={invite}
+        open={inviteDialogOpen}
+        copied={copiedInvite}
+        onOpenChange={setInviteDialogOpen}
+        onCopy={() => void copyInvite()}
+      />
     </div>
   )
 }

@@ -20,9 +20,9 @@ type StoreShape = {
 
 const STORE_VERSION = 1
 
-// Why: read-through on every access. The CLI (generate-pair/revoke) and the
-// running server are separate processes; reloading the file before each lookup
-// means a revoke takes effect for new joins without restarting the server.
+// Why: read-through on every access. Legacy compatibility paths and the running
+// server may be separate processes; reloading before each lookup lets external
+// store changes take effect for new joins without restarting the server.
 export class RoomStore {
   constructor(private readonly storePath: string) {}
 

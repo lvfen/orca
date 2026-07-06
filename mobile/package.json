@@ -16,6 +16,7 @@
     "start:emulator": "node scripts/start-emulator.mjs"
   },
   "dependencies": {
+    "@orca/expo-profile-installer": "file:./packages/expo-profile-installer",
     "@orca/expo-two-way-audio": "file:./packages/expo-two-way-audio",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "buffer": "^6.0.3",

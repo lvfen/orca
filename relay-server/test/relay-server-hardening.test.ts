@@ -92,16 +92,16 @@ describe('RelayServer hardening', () => {
       expect((await superseded.waitClose()).code).toBe(RelayCloseCode.Occupied)
     }
 
-    expect(active.liveRoomCount).toBe(1)
-    await until(() => active.connectionCount === 1)
-    expect(active.connectionCount).toBe(1)
+    expect(active.getMetrics().liveRooms).toBe(1)
+    await until(() => active.getMetrics().openConnections === 1)
+    expect(active.getMetrics().openConnections).toBe(1)
     expect(active.getMetrics().superseded).toBe(11)
   })
 
   it('rejects connections beyond the per-IP budget with 1013', async () => {
     const active = await startServer({ maxConnectionsPerWindow: 3, rateLimitWindowMs: 60_000 })
     const accepted = [await openClient(), await openClient(), await openClient()]
-    await until(() => active.connectionCount === 3)
+    await until(() => active.getMetrics().openConnections === 3)
 
     const rejectedA = await openClient()
     const rejectedB = await openClient()
@@ -109,7 +109,7 @@ describe('RelayServer hardening', () => {
     expect((await rejectedB.waitClose()).code).toBe(WS_TRY_AGAIN_LATER)
 
     expect(active.getMetrics().connectionsRejectedRateLimited).toBe(2)
-    expect(active.connectionCount).toBe(accepted.length)
+    expect(active.getMetrics().openConnections).toBe(accepted.length)
   })
 
   it('rejects connections beyond the global concurrency cap with 1013', async () => {
@@ -119,12 +119,12 @@ describe('RelayServer hardening', () => {
     })
     await openClient()
     await openClient()
-    await until(() => active.connectionCount === 2)
+    await until(() => active.getMetrics().openConnections === 2)
 
     const overflow = await openClient()
     expect((await overflow.waitClose()).code).toBe(WS_TRY_AGAIN_LATER)
     expect(active.getMetrics().connectionsRejectedOverCapacity).toBe(1)
-    expect(active.connectionCount).toBe(2)
+    expect(active.getMetrics().openConnections).toBe(2)
   })
 
   it('reports join, forward, and recycle counters over /healthz', async () => {
@@ -151,7 +151,7 @@ describe('RelayServer hardening', () => {
     client.close()
     expect((await host.waitClose()).code).toBe(RelayCloseCode.PeerRecycled)
     await until(() => active.getMetrics().peerRecycled === 1)
-    await until(() => active.liveRoomCount === 0)
+    await until(() => active.getMetrics().liveRooms === 0)
   })
 
   it('answers 426 for non-health HTTP requests on the WS port', async () => {

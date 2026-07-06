@@ -59,7 +59,7 @@ import { normalizeTerminalCursorStyleDefault } from '../../../shared/terminal-cu
 import { normalizeTerminalCustomThemes } from '../../../shared/terminal-custom-themes'
 import { normalizeUiLanguage } from '../../../shared/ui-language'
 import type { RateLimitState } from '../../../shared/rate-limit-types'
-import type { RelayStatus } from '../../../shared/relay-protocol'
+import type { DesktopRelayV2Status } from '../../../shared/relay-v2-desktop'
 import type { RuntimeStatus, RuntimeSyncWindowGraph } from '../../../shared/runtime-types'
 import {
   findKeybindingConflicts,
@@ -124,10 +124,15 @@ export const MAX_CLIPBOARD_IMAGE_PIXELS = CLIPBOARD_IMAGE_MAX_PIXELS
 export const CLIPBOARD_IMAGE_UPLOAD_CHUNK_BASE64_CHARS = 512 * 1024
 export const CLIPBOARD_IMAGE_SINGLE_FRAME_FALLBACK_BASE64_CHARS = 256 * 1024
 const CLIPBOARD_IMAGE_SAVE_TIMEOUT_MS = 30_000
-const WEB_RELAY_STATUS_UNAVAILABLE: RelayStatus = {
-  state: 'disconnected',
+const WEB_RELAY_V2_STATUS_UNAVAILABLE: DesktopRelayV2Status = {
+  state: 'relay-unavailable',
+  relayUrl: null,
+  pcId: null,
+  pcName: 'Orca Web',
   attempt: 0,
-  phoneOnline: false
+  mobile: null,
+  channelId: null,
+  lastError: 'web-unavailable'
 }
 
 let activeEnvironment: StoredWebRuntimeEnvironment | null = readStoredWebRuntimeEnvironment()
@@ -684,12 +689,32 @@ function createWebPreloadApi(): Partial<PreloadApi> {
       revokeDevice: () => Promise.resolve({ revoked: false }),
       listRuntimeAccessGrants: () => Promise.resolve({ grants: [] }),
       revokeRuntimeAccess: () => Promise.resolve({ revoked: false }),
-      isWebSocketReady: () =>
-        Promise.resolve({ ready: Boolean(activeEnvironment), endpoint: null }),
-      setRelayConfig: () => Promise.resolve({ ok: false, status: WEB_RELAY_STATUS_UNAVAILABLE }),
-      clearRelayConfig: () => Promise.resolve({ ok: true }),
-      getRelayStatus: () => Promise.resolve({ status: WEB_RELAY_STATUS_UNAVAILABLE }),
-      getRelayServerToken: () => Promise.resolve({ available: false })
+      isWebSocketReady: () => Promise.resolve({ ready: Boolean(activeEnvironment), endpoint: null })
+    },
+    mobileRelayV2: {
+      getSettings: () =>
+        Promise.resolve({
+          relayUrl: null,
+          pcId: null,
+          pcName: WEB_RELAY_V2_STATUS_UNAVAILABLE.pcName
+        }),
+      saveRelayUrl: () =>
+        Promise.resolve({
+          ok: false,
+          reason: 'invalid-url',
+          status: WEB_RELAY_V2_STATUS_UNAVAILABLE
+        }),
+      clearSettings: () => Promise.resolve({ ok: true }),
+      getStatus: () => Promise.resolve(WEB_RELAY_V2_STATUS_UNAVAILABLE),
+      createInvite: () =>
+        Promise.resolve({
+          ok: false,
+          reason: 'relay-unavailable',
+          status: WEB_RELAY_V2_STATUS_UNAVAILABLE
+        }),
+      installCertificateToken: () => Promise.resolve({ ok: false, reason: 'open-failed' }),
+      installDiscoveredCertificate: () => Promise.resolve({ ok: false, reason: 'download-failed' }),
+      onStatusChanged: () => noopUnsubscribe
     },
     telemetryTrack: () => Promise.resolve(),
     telemetrySetOptIn: () => Promise.resolve(),

@@ -4,7 +4,8 @@ export {
   RELAY_DEFAULT_MAX_CONNECTIONS_PER_IP_PER_MINUTE,
   type RelayConfig
 } from './config.js'
-export { RelayServer, type RelayServerOptions } from './relay-server.js'
+export { RelayServer } from './relay-server.js'
+export { type RelayServerOptions, type RelayV2RuntimeTuning } from './relay-server-options.js'
 export { RelayMetrics, type RelayMetricsSnapshot } from './relay-metrics.js'
 export { SlidingWindowRateLimiter, type RateLimiterOptions } from './rate-limiter.js'
 export { HeartbeatMonitor } from './heartbeat-monitor.js'

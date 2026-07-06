@@ -723,11 +723,11 @@ export default function HomeScreen() {
               <QrCode size={17} color={colors.bgBase} />
               <Text style={styles.primaryButtonText}>Pair Desktop</Text>
             </Pressable>
-            {/* Remote bridge alternative: reach this desktop from anywhere via a
+            {/* Remote relay alternative: reach this desktop from anywhere via a
                 self-hosted relay (no LAN, no inbound port). */}
-            <Pressable style={styles.secondaryButton} onPress={() => router.push('/add-relay')}>
+            <Pressable style={styles.secondaryButton} onPress={() => router.push('/pair-scan')}>
               <Globe size={15} color={colors.textSecondary} />
-              <Text style={styles.secondaryButtonText}>Add via Server Token</Text>
+              <Text style={styles.secondaryButtonText}>Add Remote Relay</Text>
             </Pressable>
           </View>
 
@@ -901,12 +901,12 @@ export default function HomeScreen() {
                 </Pressable>
                 <Pressable
                   style={({ pressed }) => [styles.quickAction, pressed && styles.hostCardPressed]}
-                  onPress={() => router.push('/add-relay')}
+                  onPress={() => router.push('/pair-scan')}
                 >
                   <View style={styles.quickActionIcon}>
                     <Globe size={16} color={colors.textSecondary} />
                   </View>
-                  <Text style={styles.quickActionLabel}>Server Token</Text>
+                  <Text style={styles.quickActionLabel}>Remote Relay</Text>
                 </Pressable>
                 <Pressable
                   disabled={!primaryConnectedHost}

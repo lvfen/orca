@@ -111,7 +111,14 @@
             "usesCleartextTraffic": true
           }
         }
-      ]
+      ],
+      [
+        "expo-notifications",
+        {
+          "enableBackgroundRemoteNotifications": false
+        }
+      ],
+      "./plugins/ios-without-push-entitlement.js"
     ]
   }
 }

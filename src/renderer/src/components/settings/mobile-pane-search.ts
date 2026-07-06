@@ -109,10 +109,7 @@ export const getMobilePaneSearchEntries = createLocalizedCatalog(() => [
     ]
   },
   {
-    title: translate(
-      'auto.components.settings.mobile.pane.search.relayTitle',
-      'Server Token (remote bridge)'
-    ),
+    title: translate('auto.components.settings.mobile.pane.search.relayTitle', 'Remote Relay'),
     description: translate(
       'auto.components.settings.mobile.pane.search.relayDesc',
       'Connect to your phone through a self-hosted relay, with no inbound port or shared network.'

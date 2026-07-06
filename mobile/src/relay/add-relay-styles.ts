@@ -2,13 +2,15 @@ import { StyleSheet } from 'react-native'
 import { colors, spacing, radii, typography } from '../theme/mobile-theme'
 
 // Why: extracted from app/add-relay.tsx to keep the screen module under the
-// max-lines budget; this file holds only the relay "Add via Server Token"
-// screen's visual styling.
+// max-lines budget; this file holds only the remote relay add screen styling.
 export const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.bgBase,
     padding: spacing.lg
+  },
+  routeRoot: {
+    flex: 1
   },
   backButton: {
     width: 36,
@@ -68,6 +70,12 @@ export const styles = StyleSheet.create({
   },
   inlineError: {
     color: colors.statusRed,
+    fontSize: typography.bodySize,
+    marginTop: spacing.sm,
+    marginLeft: spacing.xs
+  },
+  inlineNotice: {
+    color: colors.statusGreen,
     fontSize: typography.bodySize,
     marginTop: spacing.sm,
     marginLeft: spacing.xs
@@ -195,6 +203,12 @@ export const styles = StyleSheet.create({
     fontSize: typography.bodySize,
     fontWeight: '500'
   },
+  pasteButtonCompact: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xs,
+    borderRadius: radii.button
+  },
   errorActions: {
     alignItems: 'center',
     gap: spacing.sm
@@ -208,5 +222,29 @@ export const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: typography.bodySize,
     fontWeight: '500'
+  },
+  certificatePanel: {
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.lg,
+    marginBottom: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    borderRadius: radii.card,
+    backgroundColor: colors.bgPanel
+  },
+  certificateFingerprint: {
+    maxWidth: '100%',
+    color: colors.textMuted,
+    fontSize: typography.metaSize,
+    fontFamily: typography.monoFamily,
+    textAlign: 'center'
+  },
+  certificateInstruction: {
+    maxWidth: 310,
+    color: colors.textSecondary,
+    fontSize: typography.metaSize,
+    lineHeight: 18,
+    textAlign: 'center'
   }
 })

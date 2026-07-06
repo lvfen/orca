@@ -201,7 +201,14 @@ import type {
 } from '../shared/ephemeral-vm-recipes'
 import type { EphemeralVmRuntimeRecord } from '../shared/ephemeral-vm-runtimes'
 import type { RuntimeAccessGrant } from '../shared/runtime-access-grants'
-import type { RelayStatus } from '../shared/relay-protocol'
+import type {
+  CreateInviteResult,
+  DesktopRelaySettings,
+  DesktopRelayV2Status,
+  InstallCertificateResult,
+  InstallDiscoveredCertificateResult,
+  SaveRelayUrlResult
+} from '../shared/relay-v2-desktop'
 import type { RuntimeRpcResponse } from '../shared/runtime-rpc-envelope'
 import type { ExecutionHostId } from '../shared/execution-host'
 import type { FeatureInteractionId } from '../shared/feature-interactions'
@@ -2933,19 +2940,20 @@ export type PreloadApi = {
     listRuntimeAccessGrants: () => Promise<{ grants: RuntimeAccessGrant[] }>
     revokeRuntimeAccess: (args: { deviceId: string }) => Promise<{ revoked: boolean }>
     isWebSocketReady: () => Promise<{ ready: boolean; endpoint: string | null }>
-    setRelayConfig: (args: { pcToken: string }) => Promise<{ ok: boolean; status: RelayStatus }>
-    clearRelayConfig: () => Promise<{ ok: boolean }>
-    getRelayStatus: () => Promise<{ status: RelayStatus }>
-    getRelayServerToken: () => Promise<
-      | { available: false }
-      | {
-          available: true
-          qrDataUrl: string
-          publicKeyB64: string
-          deviceToken: string
-          roomId: string
-        }
-    >
+  }
+  mobileRelayV2: {
+    getSettings: () => Promise<DesktopRelaySettings>
+    saveRelayUrl: (args: { relayUrl: string }) => Promise<SaveRelayUrlResult>
+    clearSettings: () => Promise<{ ok: boolean }>
+    getStatus: () => Promise<DesktopRelayV2Status>
+    createInvite: (args: {
+      mode: 'keep-existing' | 'disconnect-existing'
+    }) => Promise<CreateInviteResult>
+    installCertificateToken: (args: { token: string }) => Promise<InstallCertificateResult>
+    installDiscoveredCertificate: (args: {
+      relayUrl: string
+    }) => Promise<InstallDiscoveredCertificateResult>
+    onStatusChanged: (callback: (status: DesktopRelayV2Status) => void) => () => void
   }
   speech: {
     getCatalog: () => Promise<SpeechModelManifest[]>

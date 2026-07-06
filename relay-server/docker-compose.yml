@@ -1,14 +1,14 @@
 # Reference deployment: the relay runs as plain ws on an internal network and
 # Caddy terminates TLS in front, giving clients a public wss:// endpoint with an
 # automatically-managed certificate. The desktop and phone only ever dial the
-# public wss:// URL (set RELAY_PUBLIC_URL accordingly before generate-pair).
+# public wss:// URL configured as RELAY_PUBLIC_URL.
 services:
   relay:
     build: .
     restart: unless-stopped
     environment:
       # Why: must be the PUBLIC wss:// URL clients reach (through Caddy), not the
-      # internal listen address — it is baked into every generated token.
+      # internal listen address — it is baked into relay invites and cert tokens.
       RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-wss://relay.example.com}
       RELAY_HOST: 0.0.0.0
       RELAY_PORT: 6770
@@ -16,14 +16,14 @@ services:
       # Why: Caddy fronts the relay, so every socket's peer address is Caddy's
       # internal IP. Trust X-Forwarded-For (Caddy sets it) so per-IP rate limiting
       # keys on the real client instead of lumping everyone under the proxy.
-      RELAY_TRUST_PROXY: "true"
+      RELAY_TRUST_PROXY: 'true'
       # Hardening knobs (M5) — override via .env to tune for your deployment.
       RELAY_MAX_CONN_PER_IP_PER_MIN: ${RELAY_MAX_CONN_PER_IP_PER_MIN:-60}
       RELAY_MAX_CONCURRENT_CONNECTIONS: ${RELAY_MAX_CONCURRENT_CONNECTIONS:-10000}
     volumes:
       - relay-data:/data
     expose:
-      - "6770"
+      - '6770'
     # Why: GET /healthz returns JSON counters; use it as the container liveness
     # probe so an unresponsive relay is restarted and Caddy waits for readiness.
     healthcheck:
@@ -40,8 +40,8 @@ services:
       relay:
         condition: service_healthy
     ports:
-      - "80:80"
-      - "443:443"
+      - '80:80'
+      - '443:443'
     environment:
       RELAY_DOMAIN: ${RELAY_DOMAIN:-relay.example.com}
     volumes:

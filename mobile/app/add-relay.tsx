@@ -3,66 +3,59 @@ import {
   View,
   Text,
   Pressable,
-  TextInput,
   ActivityIndicator,
   Linking,
   type LayoutChangeEvent
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { CameraView, useCameraPermissions } from 'expo-camera'
+import { useCameraPermissions } from 'expo-camera'
 import { useRouter } from 'expo-router'
-import { ChevronLeft, Clipboard as ClipboardIcon, QrCode } from 'lucide-react-native'
-import { connect } from '../src/transport/rpc-client'
-import { saveHost, getNextHostName } from '../src/transport/host-store'
+import { ChevronLeft } from 'lucide-react-native'
 import {
-  decodeMobileToken,
-  decodeRelayServerToken,
-  type RelayTokenPayload,
-  type RelayServerToken
+  RELAY_CERTIFICATE_TOKEN_PREFIX,
+  decodeRelayCertificateToken
 } from '../src/transport/relay-token'
-import {
-  startPairingConnectionAttempt,
-  type PairingConnectionAttempt
-} from '../src/transport/pairing-connection-attempt'
-import type { ConnectionLogEntry, RpcResponse } from '../src/transport/types'
+import type { PairingConnectionAttempt } from '../src/transport/pairing-connection-attempt'
+import type { ConnectionLogEntry } from '../src/transport/types'
 import { colors, spacing } from '../src/theme/mobile-theme'
 import { TextInputModal } from '../src/components/TextInputModal'
 import { ConnectionLog } from '../src/components/ConnectionLog'
 import { styles } from '../src/relay/add-relay-styles'
-
-// Why: relay handshake adds a room-join round-trip on top of the E2EE flow and
-// the host may still be connecting to the relay, so allow a touch more time
-// than direct LAN pairing before surfacing the diagnostic log.
-const RELAY_OVERALL_TIMEOUT_MS = 30_000
+import { RelayCameraPermissionScreen } from '../src/relay/relay-camera-permission-screen'
+import { RelayTokenEntryScreen } from '../src/relay/relay-token-entry-screen'
+import { decodeRelayV2Invite, type RelayInviteV2Payload } from '../src/relay/relay-v2-invite'
+import { RelayV2CertificateScreen } from '../src/relay/relay-v2-certificate-screen'
+import {
+  connectAndSaveRelayV2,
+  type AddRelayFlowResult
+} from '../src/relay/add-relay-connection-flows'
+import {
+  openRelayCertificateToken,
+  openRelayV2CertificateProfile as openRelayV2CertificateProfileFile
+} from '../src/relay/relay-certificate-installation'
+import { RelayQrScanner } from '../src/relay/relay-qr-scanner'
 const SCAN_RETICLE_SCALE = 0.62
 const SCAN_RETICLE_MAX_SIZE = 360
 
-type Status = 'enter-token' | 'scanning' | 'connecting' | 'error'
-
-function Step({ number, text }: { number: number; text: string }) {
-  return (
-    <View style={styles.step}>
-      <View style={styles.stepBadge}>
-        <Text style={styles.stepNumber}>{number}</Text>
-      </View>
-      <Text style={styles.stepText}>{text}</Text>
-    </View>
-  )
-}
+type Status = 'enter-token' | 'scanning' | 'certificate-required' | 'connecting' | 'error'
 
 export default function AddRelayScreen() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const [permission, requestPermission] = useCameraPermissions()
-  const [status, setStatus] = useState<Status>('enter-token')
+  // Why: relay v2 pairing is initiated by the PC QR invite; manual token entry
+  // is only a fallback for pasted invites/certificates.
+  const [status, setStatus] = useState<Status>('scanning')
   const [tokenInput, setTokenInput] = useState('')
   const [tokenError, setTokenError] = useState('')
+  const [tokenNotice, setTokenNotice] = useState('')
+  const [certificateNotice, setCertificateNotice] = useState('')
+  const [certificateError, setCertificateError] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const [pasteVisible, setPasteVisible] = useState(false)
   const [cameraBounds, setCameraBounds] = useState({ width: 0, height: 0 })
   const [logs, setLogs] = useState<ConnectionLogEntry[]>([])
-  const relayRef = useRef<RelayTokenPayload | null>(null)
-  const mobileTokenRef = useRef('')
+  const relayV2InviteRef = useRef<RelayInviteV2Payload | null>(null)
   const logsRef = useRef<ConnectionLogEntry[]>([])
   const processingRef = useRef(false)
   const mountedRef = useRef(true)
@@ -79,46 +72,82 @@ export default function AddRelayScreen() {
     activeAttemptRef.current = null
   }, [])
 
-  const handleTokenContinue = useCallback(() => {
-    const decoded = decodeMobileToken(tokenInput.trim())
-    if (!decoded) {
-      setTokenError('Not a valid server token — copy the mobile token from your PC')
+  const openCertificateToken = useCallback(async (token: string): Promise<void> => {
+    const result = await openRelayCertificateToken(token)
+    if (result === 'invalid') {
+      setTokenNotice('')
+      setTokenError('Not a valid certificate token')
       return
     }
-    relayRef.current = decoded
-    mobileTokenRef.current = tokenInput.trim()
+    if (result === 'opened') {
+      setTokenInput('')
+      setTokenError('')
+      setTokenNotice(
+        'Certificate profile opened. Finish installation in Settings, then enable full trust.'
+      )
+      return
+    }
+    setTokenNotice('')
+    setTokenError('Could not open the certificate profile')
+  }, [])
+
+  const handleTokenContinue = useCallback(() => {
+    const token = tokenInput.trim()
+    if (token.startsWith(RELAY_CERTIFICATE_TOKEN_PREFIX)) {
+      void openCertificateToken(token)
+      return
+    }
+    const invite = decodeRelayV2Invite(token)
+    if (invite) {
+      handleRelayV2Invite(invite)
+      return
+    }
+    setTokenNotice('')
+    setTokenError('Not a valid relay invite or certificate token')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openCertificateToken, tokenInput])
+
+  function updateTokenInput(value: string): void {
+    setTokenInput(value)
     setTokenError('')
-    setStatus('scanning')
-  }, [tokenInput])
+    setTokenNotice('')
+  }
 
   const handleBarCodeScanned = useCallback(({ data }: { data: string }) => {
     if (processingRef.current) {
       return
     }
-    const server = decodeRelayServerToken(data)
-    if (!server) {
-      return
+    const invite = decodeRelayV2Invite(data)
+    if (invite) {
+      processingRef.current = true
+      handleRelayV2Invite(invite)
     }
-    processingRef.current = true
-    void testAndSave(server)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handlePasteSubmit = useCallback((input: string) => {
-    setPasteVisible(false)
-    if (processingRef.current) {
-      return
-    }
-    const server = decodeRelayServerToken(input.trim())
-    if (!server) {
+  const handlePasteSubmit = useCallback(
+    (input: string) => {
+      setPasteVisible(false)
+      if (processingRef.current) {
+        return
+      }
+      const trimmed = input.trim()
+      const invite = decodeRelayV2Invite(trimmed)
+      if (invite) {
+        processingRef.current = true
+        handleRelayV2Invite(invite)
+        return
+      }
+      if (decodeRelayCertificateToken(trimmed)) {
+        void openCertificateToken(trimmed)
+        return
+      }
       setStatus('error')
-      setErrorMessage('Not a valid Server Token QR — copy it from Orca on your PC')
-      return
-    }
-    processingRef.current = true
-    void testAndSave(server)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+      setErrorMessage('Not a valid relay invite — scan the Remote relay QR from your PC')
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [openCertificateToken]
+  )
 
   const handleCameraLayout = useCallback((event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout
@@ -126,118 +155,84 @@ export default function AddRelayScreen() {
     setCameraBounds((cur) => (cur.width === next.width && cur.height === next.height ? cur : next))
   }, [])
 
-  async function testAndSave(server: RelayServerToken) {
-    const relay = relayRef.current
-    const mobileToken = mobileTokenRef.current
-    if (!relay || !mobileToken) {
-      setStatus('enter-token')
+  function handleRelayV2Invite(invite: RelayInviteV2Payload): void {
+    relayV2InviteRef.current = invite
+    setCertificateNotice('')
+    setCertificateError('')
+    setTokenError('')
+    setTokenNotice('')
+    if (invite.serverCaDerB64 !== 'unavailable' && invite.serverCaSha256 !== 'unavailable') {
+      setStatus('certificate-required')
+      processingRef.current = false
       return
     }
+    void testAndSaveV2(invite)
+  }
+
+  async function openRelayV2CertificateProfile(): Promise<void> {
+    const invite = relayV2InviteRef.current
+    if (!invite) {
+      return
+    }
+    if ((await openRelayV2CertificateProfileFile(invite)) === 'opened') {
+      setCertificateError('')
+      setCertificateNotice(
+        'Profile opened. Finish installation in Settings, enable Full Trust, then continue.'
+      )
+      return
+    }
+    setCertificateNotice('')
+    setCertificateError('Could not open the certificate profile')
+  }
+
+  async function testAndSaveV2(invite: RelayInviteV2Payload) {
     setStatus('connecting')
+    resetLogs()
+    activeAttemptRef.current?.dispose()
+    handleFlowResult(await connectAndSaveRelayV2({ invite, hooks: createAttemptHooks() }))
+  }
+
+  function createAttemptHooks() {
+    return {
+      setActiveAttempt: (attempt: PairingConnectionAttempt) => {
+        activeAttemptRef.current = attempt
+      },
+      clearActiveAttempt: (attempt: PairingConnectionAttempt) => {
+        if (activeAttemptRef.current === attempt) {
+          activeAttemptRef.current = null
+        }
+      },
+      isActiveAttempt: (attempt: PairingConnectionAttempt) => activeAttemptRef.current === attempt,
+      isMounted: () => mountedRef.current,
+      onLog: (entry: ConnectionLogEntry) => {
+        logsRef.current = [...logsRef.current, entry]
+        setLogs(logsRef.current)
+      }
+    }
+  }
+
+  function handleFlowResult(result: AddRelayFlowResult): void {
+    if (result.type === 'cancelled') {
+      return
+    }
+    if (result.type === 'saved') {
+      router.replace(`/h/${result.hostId}`)
+      return
+    }
+    setStatus('error')
+    setErrorMessage(result.message)
+    processingRef.current = false
+  }
+
+  function resetLogs(): void {
     logsRef.current = []
     setLogs([])
-    let client: ReturnType<typeof connect> | null = null
-    activeAttemptRef.current?.dispose()
-
-    let response: RpcResponse
-    const attempt = startPairingConnectionAttempt({
-      timeoutMs: RELAY_OVERALL_TIMEOUT_MS,
-      closeClient: () => client?.close()
-    })
-    activeAttemptRef.current = attempt
-    try {
-      client = connect(relay.relayUrl, server.deviceToken, server.publicKeyB64, {
-        relay: { mobileToken },
-        onLog: (entry) => {
-          if (!mountedRef.current || activeAttemptRef.current !== attempt) {
-            return
-          }
-          logsRef.current = [...logsRef.current, entry]
-          setLogs(logsRef.current)
-        }
-      })
-      response = await client.sendRequest('status.get')
-      const isCurrent = activeAttemptRef.current === attempt
-      attempt.dispose()
-      if (activeAttemptRef.current === attempt) {
-        activeAttemptRef.current = null
-      }
-      if (!mountedRef.current || !isCurrent) {
-        return
-      }
-    } catch (err) {
-      const timedOut = attempt.timedOut
-      const isCurrent = activeAttemptRef.current === attempt
-      attempt.dispose()
-      if (activeAttemptRef.current === attempt) {
-        activeAttemptRef.current = null
-      }
-      if (!mountedRef.current || !isCurrent) {
-        return
-      }
-      console.warn('[relay] connect failed', err)
-      setStatus('error')
-      setErrorMessage(
-        timedOut
-          ? `Couldn't reach your PC through the relay within ${RELAY_OVERALL_TIMEOUT_MS / 1000}s — is the desktop online? See log below.`
-          : 'Cannot connect through the relay — check the token and that your PC is online'
-      )
-      processingRef.current = false
-      return
-    }
-
-    if (!response.ok) {
-      if (!mountedRef.current) {
-        return
-      }
-      setStatus('error')
-      setErrorMessage(
-        response.error.code === 'unauthorized'
-          ? 'Authentication failed — re-pair on the PC and try again'
-          : `Server error: ${response.error.message}`
-      )
-      processingRef.current = false
-      return
-    }
-
-    try {
-      const hostId = `host-${Date.now()}`
-      const hostName = await getNextHostName()
-      await saveHost({
-        id: hostId,
-        name: hostName,
-        // Why: for relay hosts the endpoint IS the relay URL — connect() dials
-        // it and the mobileToken claims the room before the E2EE flow.
-        endpoint: relay.relayUrl,
-        deviceToken: server.deviceToken,
-        publicKeyB64: server.publicKeyB64,
-        lastConnected: Date.now(),
-        kind: 'relay',
-        mobileToken,
-        roomId: relay.roomId
-      })
-      if (!mountedRef.current) {
-        return
-      }
-      router.replace(`/h/${hostId}`)
-    } catch (err) {
-      if (!mountedRef.current) {
-        return
-      }
-      console.warn('[relay] save failed', err)
-      setStatus('error')
-      setErrorMessage(
-        `Connected but couldn't save the host: ${err instanceof Error ? err.message : String(err)}`
-      )
-      processingRef.current = false
-    }
   }
 
   function retry() {
     setStatus('scanning')
     setErrorMessage('')
-    logsRef.current = []
-    setLogs([])
+    resetLogs()
     processingRef.current = false
   }
 
@@ -250,42 +245,43 @@ export default function AddRelayScreen() {
     SCAN_RETICLE_MAX_SIZE
   )
 
-  // ─── Step 1: paste the mobile (server) token ───
+  // ─── Step 1: scan or paste the relay v2 invite ───
   if (status === 'enter-token') {
     return (
-      <View ref={setRootRef} style={[styles.container, containerPadding]}>
-        <Pressable style={styles.backButton} onPress={() => router.back()}>
-          <ChevronLeft size={22} color={colors.textSecondary} />
-        </Pressable>
-        <View style={styles.steps}>
-          <Step number={1} text="On your PC: Settings → Mobile → Server Token" />
-          <Step number={2} text="Copy the mobile token and paste it below" />
-          <Step number={3} text="Then scan the Server Token QR" />
-        </View>
-        <Text style={styles.fieldLabel}>Mobile token</Text>
-        <TextInput
-          style={styles.tokenField}
-          value={tokenInput}
-          onChangeText={setTokenInput}
-          placeholder="orca-mb_…"
-          placeholderTextColor={colors.textMuted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          multiline
-          textAlignVertical="top"
+      <View ref={setRootRef} style={styles.routeRoot}>
+        <RelayTokenEntryScreen
+          containerPadding={containerPadding}
+          tokenInput={tokenInput}
+          tokenError={tokenError}
+          tokenNotice={tokenNotice}
+          onTokenInputChange={updateTokenInput}
+          onBack={() => router.back()}
+          onContinue={handleTokenContinue}
+          onScanRelayV2={() => {
+            setStatus('scanning')
+            setTokenError('')
+            setTokenNotice('')
+          }}
         />
-        {tokenError ? <Text style={styles.inlineError}>{tokenError}</Text> : null}
-        <Pressable
-          style={({ pressed }) => [
-            styles.primaryButton,
-            styles.fullWidthButton,
-            (pressed || tokenInput.trim().length === 0) && styles.primaryButtonDim
-          ]}
-          disabled={tokenInput.trim().length === 0}
-          onPress={handleTokenContinue}
-        >
-          <Text style={styles.primaryButtonText}>Continue</Text>
-        </Pressable>
+      </View>
+    )
+  }
+
+  if (status === 'certificate-required' && relayV2InviteRef.current) {
+    return (
+      <View ref={setRootRef} style={styles.routeRoot}>
+        <RelayV2CertificateScreen
+          containerPadding={containerPadding}
+          invite={relayV2InviteRef.current}
+          notice={certificateNotice}
+          error={certificateError}
+          onBack={() => {
+            relayV2InviteRef.current = null
+            setStatus('scanning')
+          }}
+          onInstall={() => void openRelayV2CertificateProfile()}
+          onContinue={() => void testAndSaveV2(relayV2InviteRef.current!)}
+        />
       </View>
     )
   }
@@ -301,43 +297,17 @@ export default function AddRelayScreen() {
   if (!permission.granted) {
     const canAskAgain = permission.canAskAgain !== false
     return (
-      <View ref={setRootRef} style={[styles.container, containerPadding]}>
-        <Pressable style={styles.backButton} onPress={() => router.back()}>
-          <ChevronLeft size={22} color={colors.textSecondary} />
-        </Pressable>
-        <View style={styles.centered}>
-          <Text style={styles.title}>
-            {canAskAgain ? 'Scan Server Token' : 'Camera Access Disabled'}
-          </Text>
-          <Text style={styles.subtitle}>
-            {canAskAgain
-              ? 'Scan the Server Token QR from Orca on your desktop, or paste it instead.'
-              : 'Enable camera access in Settings, or paste the Server Token instead.'}
-          </Text>
-          <Pressable
-            style={styles.primaryButton}
-            onPress={canAskAgain ? requestPermission : () => void Linking.openSettings()}
-          >
-            {canAskAgain && <QrCode size={16} color={colors.bgBase} />}
-            <Text style={styles.primaryButtonText}>
-              {canAskAgain ? 'Continue' : 'Open Settings'}
-            </Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [styles.pasteButton, pressed && styles.pasteButtonPressed]}
-            onPress={() => setPasteVisible(true)}
-          >
-            <ClipboardIcon size={16} color={colors.textSecondary} />
-            <Text style={styles.pasteButtonText}>Paste token instead</Text>
-          </Pressable>
-        </View>
-        <TextInputModal
-          visible={pasteVisible}
-          title="Paste Server Token"
-          message="Copy the Server Token shown under the QR on your computer."
-          placeholder='{"v":1,"publicKeyB64":"…","deviceToken":"…"}'
-          onSubmit={handlePasteSubmit}
-          onCancel={() => setPasteVisible(false)}
+      <View ref={setRootRef} style={styles.routeRoot}>
+        <RelayCameraPermissionScreen
+          containerPadding={containerPadding}
+          canAskAgain={canAskAgain}
+          pasteVisible={pasteVisible}
+          onBack={() => router.back()}
+          onRequestPermission={requestPermission}
+          onOpenSettings={() => void Linking.openSettings()}
+          onShowPaste={() => setPasteVisible(true)}
+          onPasteSubmit={handlePasteSubmit}
+          onCancelPaste={() => setPasteVisible(false)}
         />
       </View>
     )
@@ -350,34 +320,14 @@ export default function AddRelayScreen() {
       </Pressable>
 
       {status === 'scanning' && (
-        <>
-          {!pasteVisible && (
-            <View style={styles.cameraWrap} onLayout={handleCameraLayout}>
-              <CameraView
-                style={styles.camera}
-                facing="back"
-                barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-                onBarcodeScanned={handleBarCodeScanned}
-              />
-              <View style={styles.reticle} pointerEvents="none">
-                <View style={[styles.reticleFrame, { width: reticleSize, height: reticleSize }]}>
-                  <View style={[styles.corner, styles.cornerTL]} />
-                  <View style={[styles.corner, styles.cornerTR]} />
-                  <View style={[styles.corner, styles.cornerBL]} />
-                  <View style={[styles.corner, styles.cornerBR]} />
-                </View>
-              </View>
-            </View>
-          )}
-          {pasteVisible && <View style={styles.cameraPlaceholder} />}
-          <Pressable
-            style={({ pressed }) => [styles.pasteButton, pressed && styles.pasteButtonPressed]}
-            onPress={() => setPasteVisible(true)}
-          >
-            <ClipboardIcon size={16} color={colors.textSecondary} />
-            <Text style={styles.pasteButtonText}>Or paste Server Token</Text>
-          </Pressable>
-        </>
+        <RelayQrScanner
+          pasteVisible={pasteVisible}
+          reticleSize={reticleSize}
+          onCameraLayout={handleCameraLayout}
+          onBarcodeScanned={handleBarCodeScanned}
+          onShowPaste={() => setPasteVisible(true)}
+          onManualEntry={() => setStatus('enter-token')}
+        />
       )}
 
       {status === 'connecting' && (
@@ -412,7 +362,7 @@ export default function AddRelayScreen() {
                 setPasteVisible(true)
               }}
             >
-              <Text style={styles.secondaryButtonText}>Paste token instead</Text>
+              <Text style={styles.secondaryButtonText}>Paste invite instead</Text>
             </Pressable>
           </View>
         </View>
@@ -420,9 +370,9 @@ export default function AddRelayScreen() {
 
       <TextInputModal
         visible={pasteVisible}
-        title="Paste Server Token"
-        message="Copy the Server Token shown under the QR on your computer."
-        placeholder='{"v":1,"publicKeyB64":"…","deviceToken":"…"}'
+        title="Paste Relay Invite"
+        message="Copy the Remote relay invite JSON or certificate token from your computer."
+        placeholder='{"v":2,"type":"orca-relay-invite",...}'
         onSubmit={handlePasteSubmit}
         onCancel={() => setPasteVisible(false)}
       />

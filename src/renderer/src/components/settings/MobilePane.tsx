@@ -171,7 +171,7 @@ export function MobilePane(): React.JSX.Element {
             {translate('auto.components.settings.MobilePane.tabLan', 'LAN WebSocket')}
           </TabsTrigger>
           <TabsTrigger value="relay">
-            {translate('auto.components.settings.MobilePane.tabRelay', 'Server Token')}
+            {translate('auto.components.settings.MobilePane.tabRelay', 'Remote Relay')}
           </TabsTrigger>
         </TabsList>
 

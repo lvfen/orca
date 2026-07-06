@@ -15,8 +15,8 @@ const STORAGE_KEY = 'orca:hosts'
 // satisfying the validator.
 const TOKEN_KEY_PREFIX = 'orca.host-token.'
 const WEB_TOKEN_KEY_PREFIX = 'orca:web-host-token:'
-// Why: relay hosts carry a second bearer credential — the mobileToken used for
-// the relay client-join. Keep it in the keychain alongside the deviceToken so
+// Why: relay hosts carry a second bearer credential: v1 stores the mobileToken,
+// v2 stores the resumeToken. Keep it in the keychain alongside deviceToken so
 // it never lands in AsyncStorage.
 const RELAY_TOKEN_KEY_PREFIX = 'orca.host-relay-token.'
 const WEB_RELAY_TOKEN_KEY_PREFIX = 'orca:web-host-relay-token:'
@@ -168,7 +168,7 @@ async function doLoadHosts(): Promise<HostProfile[]> {
     }
 
     let mobileToken: string | undefined
-    if (stored.data.kind === 'relay') {
+    if (stored.data.kind === 'relay' || stored.data.kind === 'relay-v2') {
       mobileToken = relayTokenCache.get(stored.data.id)
       if (!mobileToken) {
         let fetchedRelay: string | null
@@ -223,7 +223,11 @@ function toStored(host: HostProfile): StoredHostProfile {
     publicKeyB64: host.publicKeyB64,
     lastConnected: host.lastConnected,
     kind: host.kind,
-    roomId: host.roomId
+    pcId: host.pcId,
+    mobileDeviceId: host.mobileDeviceId,
+    roomId: host.roomId,
+    resumeTokenExpiresAt: host.resumeTokenExpiresAt,
+    serverCaSha256: host.serverCaSha256
   }
 }
 
@@ -245,7 +249,7 @@ export async function saveHost(host: HostProfile): Promise<void> {
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(hosts))
   await writeDeviceToken(stored.id, validated.deviceToken)
   tokenCache.set(stored.id, validated.deviceToken)
-  if (validated.kind === 'relay' && validated.mobileToken) {
+  if ((validated.kind === 'relay' || validated.kind === 'relay-v2') && validated.mobileToken) {
     await writeRelayToken(stored.id, validated.mobileToken)
     relayTokenCache.set(stored.id, validated.mobileToken)
   }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { connect } from './rpc-client'
+import { RELAY_V2_PROTOCOL_VERSION } from '../relay/relay-v2-invite'
 
 vi.mock('./e2ee', () => ({
   generateKeyPair: () => ({
@@ -89,6 +90,20 @@ function sentEncrypted(socket: MockWebSocket, type: string): boolean {
       return false
     }
   })
+}
+
+function latestPlain(socket: MockWebSocket): Record<string, unknown> | null {
+  for (const payload of socket.sent) {
+    if (payload.startsWith('encrypted:')) {
+      continue
+    }
+    try {
+      return JSON.parse(payload) as Record<string, unknown>
+    } catch {
+      // ignore
+    }
+  }
+  return null
 }
 
 function authenticate(socket: MockWebSocket): void {
@@ -229,6 +244,82 @@ describe('rpc-client relay pre-handshake', () => {
     // LAN: e2ee_hello goes out immediately, no client-join.
     expect(sentPlain(socket, 'client-join')).toBe(false)
     expect(sentPlain(socket, 'e2ee_hello')).toBe(true)
+
+    client.close()
+  })
+
+  it('sends mobile-join and defers E2EE hello until relay v2 bind ack', () => {
+    const acks: unknown[] = []
+    const client = connect('wss://relay.example', 'dev-token', 'server-key', {
+      relayV2: {
+        mode: 'join',
+        message: {
+          type: 'mobile-join',
+          v: RELAY_V2_PROTOCOL_VERSION,
+          channelId: 'channel-1',
+          inviteToken: 'invite-1',
+          mobileDeviceId: 'mobile-1',
+          mobileName: 'iPhone'
+        },
+        onBindAck: (ack) => acks.push(ack)
+      }
+    })
+    const socket = mockSockets[0]!
+
+    socket.open()
+    expect(latestPlain(socket)).toMatchObject({
+      type: 'mobile-join',
+      channelId: 'channel-1',
+      mobileDeviceId: 'mobile-1'
+    })
+    expect(sentPlain(socket, 'e2ee_hello')).toBe(false)
+
+    socket.receive(
+      JSON.stringify({
+        type: 'mobile-bind-ack',
+        pcId: 'pc-1',
+        mobileDeviceId: 'mobile-1',
+        resumeToken: 'resume-1',
+        resumeTokenExpiresAt: 123
+      })
+    )
+    expect(acks).toHaveLength(1)
+    expect(sentPlain(socket, 'e2ee_hello')).toBe(true)
+    authenticate(socket)
+    expect(client.getState()).toBe('connected')
+
+    client.close()
+  })
+
+  it('sends mobile-resume and starts E2EE after relay v2 resume ack', () => {
+    const client = connect('wss://relay.example', 'dev-token', 'server-key', {
+      relayV2: {
+        mode: 'resume',
+        message: {
+          type: 'mobile-resume',
+          v: RELAY_V2_PROTOCOL_VERSION,
+          pcId: 'pc-1',
+          mobileDeviceId: 'mobile-1',
+          resumeToken: 'resume-1'
+        }
+      }
+    })
+    const socket = mockSockets[0]!
+
+    socket.open()
+    expect(latestPlain(socket)).toMatchObject({
+      type: 'mobile-resume',
+      pcId: 'pc-1',
+      mobileDeviceId: 'mobile-1'
+    })
+    expect(sentPlain(socket, 'e2ee_hello')).toBe(false)
+
+    socket.receive(
+      JSON.stringify({ type: 'mobile-resume-ack', pcId: 'pc-1', mobileDeviceId: 'mobile-1' })
+    )
+    expect(sentPlain(socket, 'e2ee_hello')).toBe(true)
+    authenticate(socket)
+    expect(client.getState()).toBe('connected')
 
     client.close()
   })

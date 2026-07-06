@@ -33,6 +33,25 @@ export function writeSecureJson(targetPath: string, value: unknown): void {
   }
 }
 
+export function writeOwnerOnlyFile(targetPath: string, contents: Buffer | string): void {
+  const dir = dirname(targetPath)
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+  }
+  applyOwnerOnly(dir, true)
+
+  const tmpFile = `${targetPath}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`
+  try {
+    writeFileSync(tmpFile, contents, { mode: 0o600 })
+    applyOwnerOnly(tmpFile, false)
+    renameSync(tmpFile, targetPath)
+    applyOwnerOnly(targetPath, false)
+  } catch (error) {
+    rmSync(tmpFile, { force: true })
+    throw error
+  }
+}
+
 export function readSecureJson<T>(targetPath: string): T | null {
   if (!existsSync(targetPath)) {
     return null
