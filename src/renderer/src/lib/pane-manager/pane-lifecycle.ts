@@ -13,6 +13,7 @@ import { attachWebgl, cancelPendingWebglRefresh, disposeWebgl } from './pane-web
 import { configureLazyArabicShapingJoiner } from './terminal-arabic-shaping-joiner'
 import { TerminalLigaturesAddon } from './terminal-ligatures-addon'
 import { resolveCursorAgentImeAnchor } from './terminal-ime-anchor'
+import { syncCursorAgentImeTextareaAnchor } from './terminal-ime-textarea-anchor'
 
 // ---------------------------------------------------------------------------
 // Pane creation, terminal open/close, addon management
@@ -120,7 +121,7 @@ export function openTerminal(pane: ManagedPaneInternal): void {
       if (cursorAgentAnchor) {
         window.setTimeout(() => {
           if (textarea.isConnected) {
-            applyAnchor()
+            syncCursorAgentImeTextareaAnchor(terminal)
           }
         }, 0)
       }
