@@ -5602,6 +5602,45 @@ describe('connectPanePty', () => {
     })
   })
 
+  it('clears the focused reattach repair timer on dispose', async () => {
+    vi.useFakeTimers()
+    const { connectPanePty } = await import('./pty-connection')
+    const transport = createMockTransport()
+    transport.connect.mockImplementation(async ({ sessionId }: { sessionId?: string }) => {
+      if (sessionId) {
+        return {
+          id: sessionId,
+          snapshot: `\x1b[?1004h\x1b[?25l${ANSI_POSITIONED_CURSOR_AGENT_REATTACH_SCREEN}`
+        }
+      }
+      return null
+    })
+    transportFactoryQueue.push(transport)
+    setReattachPaneTitle('Cursor Agent')
+
+    const pane = createPane(1)
+    const textarea = {} as HTMLTextAreaElement
+    configureTerminalFocusMode(pane, textarea)
+    configureParkedCursorAgentBuffer(pane)
+    await withMockedDocumentActiveElement(textarea, async () => {
+      const manager = createManager(1)
+      const deps = createDeps({
+        restoredLeafId: LEAF_1,
+        restoredPtyIdByLeafId: { [LEAF_1]: 'tab-pty' }
+      })
+
+      const binding = connectPanePty(pane as never, manager as never, deps as never)
+      await flushAsyncTicks(20)
+      transport.sendInput.mockClear()
+
+      binding.dispose()
+      vi.advanceTimersByTime(150)
+      await flushAsyncTicks(10)
+
+      expect(transport.sendInput).not.toHaveBeenCalled()
+    })
+  })
+
   it('does not inject focus-in after reattach when the terminal does not own DOM focus', async () => {
     const { connectPanePty } = await import('./pty-connection')
     const transport = createMockTransport()

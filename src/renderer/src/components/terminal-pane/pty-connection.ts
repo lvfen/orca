@@ -1061,6 +1061,7 @@ export function connectPanePty(
   let unregisterBacklogRecovery: (() => void) | null = null
   let unregisterDocumentVisibilityRecovery: (() => void) | null = null
   let unregisterWindowFocusReattachRepair: (() => void) | null = null
+  let reattachFocusInRepairTimer: ReturnType<typeof setTimeout> | null = null
   let cleanupHiddenOutputRestoreDeferredRetry = (): void => {}
   let cleanupHiddenOutputRestoreForegroundDeadline = (): void => {}
   let resetRendererOrderedSeqForPtyExit: (exitedPtyId: string) => void = () => {}
@@ -1073,6 +1074,12 @@ export function connectPanePty(
   let agentTaskCompleteStatusUnsubscribe: (() => void) | null = null
   let agentTaskCompleteSettingsUnsubscribe: (() => void) | null = null
   let agentTaskCompleteNotificationGeneration = 0
+  const clearReattachFocusInRepairTimer = (): void => {
+    if (reattachFocusInRepairTimer !== null) {
+      clearTimeout(reattachFocusInRepairTimer)
+      reattachFocusInRepairTimer = null
+    }
+  }
   let wasAgentTaskCompleteTrackingEnabled = isAgentTaskCompleteTrackingEnabled()
   let wasAgentTaskCompleteOsNotificationEnabled = isAgentTaskCompleteNotificationEnabled()
   let terminalBellNotificationTimer: ReturnType<typeof setTimeout> | null = null
@@ -4054,8 +4061,6 @@ export function connectPanePty(
       writeFreshShellViewportBlanking()
     }
 
-    let reattachFocusInRepairTimer: ReturnType<typeof setTimeout> | null = null
-
     const sendFocusedReattachFocusInAfterReplay = (): void => {
       const scheduledGeneration = reattachReplayPayloadSignalGeneration
       void waitForTerminalOutputParsed(pane.terminal).then(() => {
@@ -4101,18 +4106,44 @@ export function connectPanePty(
         const parkedCursorAgentScreen = parsedViewportShowsParkedCursorAgentScreen(pane.terminal)
         hideParkedCursorAgentVisualCursor(parkedCursorAgentScreen)
         if (parkedCursorAgentScreen === true) {
+          registerWindowFocusReattachRepair()
           scheduleFocusedReattachFocusInRepair()
         }
       })
     }
 
-    function clearReattachFocusInRepairTimer(): void {
-      if (reattachFocusInRepairTimer !== null) {
-        clearTimeout(reattachFocusInRepairTimer)
-        reattachFocusInRepairTimer = null
+    function registerWindowFocusReattachRepair(): void {
+      if (unregisterWindowFocusReattachRepair !== null) {
+        return
       }
+      if (
+        typeof window === 'undefined' ||
+        typeof window.addEventListener !== 'function' ||
+        typeof window.removeEventListener !== 'function'
+      ) {
+        return
+      }
+      const onWindowFocus = (): void => {
+        // Why: xterm may report focus-out during app blur while Chromium keeps
+        // the helper textarea as DOM focus; repair Cursor Agent's parked cursor
+        // once the app is active again.
+        sendFocusedReattachFocusInIfStillParked()
+      }
+      window.addEventListener('focus', onWindowFocus)
+      unregisterWindowFocusReattachRepair = () => window.removeEventListener('focus', onWindowFocus)
     }
     function sendFocusedReattachFocusInIfStillParked(): void {
+      if (disposed) {
+        return
+      }
+      if (!reattachReplayPayloadHasCursorAgentSignal) {
+        return
+      }
+      const sendFocusMode = terminalHasFocusReportingEnabled(pane.terminal)
+      const shouldSendFocusIn = shouldSendFocusedAgentReattachFocusIn()
+      if (!shouldSendFocusIn || !sendFocusMode) {
+        return
+      }
       const scheduledGeneration = reattachReplayPayloadSignalGeneration
       void waitForTerminalOutputParsed(pane.terminal).then(() => {
         if (disposed) {
@@ -4128,9 +4159,9 @@ export function connectPanePty(
         if (parkedCursorAgentScreen === false) {
           return
         }
-        const sendFocusMode = terminalHasFocusReportingEnabled(pane.terminal)
-        const shouldSendFocusIn = shouldSendFocusedAgentReattachFocusIn()
-        if (!shouldSendFocusIn || !sendFocusMode) {
+        const latestSendFocusMode = terminalHasFocusReportingEnabled(pane.terminal)
+        const latestShouldSendFocusIn = shouldSendFocusedAgentReattachFocusIn()
+        if (!latestShouldSendFocusIn || !latestSendFocusMode) {
           return
         }
         transport.sendInput(TERMINAL_FOCUS_IN_SEQUENCE)
@@ -5323,21 +5354,6 @@ export function connectPanePty(
       unregisterDocumentVisibilityRecovery = () =>
         document.removeEventListener('visibilitychange', onDocumentVisibilityChange)
     }
-    if (
-      typeof window !== 'undefined' &&
-      typeof window.addEventListener === 'function' &&
-      typeof window.removeEventListener === 'function'
-    ) {
-      const onWindowFocus = (): void => {
-        // Why: xterm may report focus-out during app blur while Chromium keeps
-        // the helper textarea as DOM focus; repair Cursor Agent's parked cursor
-        // once the app is active again.
-        sendFocusedReattachFocusInIfStillParked()
-      }
-      window.addEventListener('focus', onWindowFocus)
-      unregisterWindowFocusReattachRepair = () => window.removeEventListener('focus', onWindowFocus)
-    }
-
     const dataCallback = (data: string, meta?: PtyDataMeta): void => {
       if (data.length > 0) {
         hasReceivedPtyOutput = true
@@ -6363,6 +6379,7 @@ export function connectPanePty(
       pendingTerminalBellNotification = false
       clearTerminalBellNotificationTimer()
       clearReattachIdleAgentCursorResetTimer()
+      clearReattachFocusInRepairTimer()
       if (alternateScreenBackgroundRepaintTimer !== null) {
         clearTimeout(alternateScreenBackgroundRepaintTimer)
         alternateScreenBackgroundRepaintTimer = null
