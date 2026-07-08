@@ -3,6 +3,7 @@ import type { PaneManager, ManagedPane } from '@/lib/pane-manager/pane-manager'
 import type { ManagedPaneInternal } from '@/lib/pane-manager/pane-manager-types'
 import type { IBuffer, IDisposable } from '@xterm/xterm'
 import { resolveCursorAgentImeAnchor } from '@/lib/pane-manager/terminal-ime-anchor'
+import { syncCursorAgentImeTextareaAnchor } from '@/lib/pane-manager/terminal-ime-textarea-anchor'
 import { detectAgentStatusFromTitle, agentTypeToIconAgent, isClaudeAgent } from '@/lib/agent-status'
 import { resolvePaneTitleDecision } from './terminal-title-evidence'
 import { scheduleRuntimeGraphSync } from '@/runtime/sync-runtime-graph'
@@ -1059,6 +1060,7 @@ export function connectPanePty(
   let connectStarted = false
   let unregisterBacklogRecovery: (() => void) | null = null
   let unregisterDocumentVisibilityRecovery: (() => void) | null = null
+  let unregisterWindowFocusReattachRepair: (() => void) | null = null
   let cleanupHiddenOutputRestoreDeferredRetry = (): void => {}
   let cleanupHiddenOutputRestoreForegroundDeadline = (): void => {}
   let resetRendererOrderedSeqForPtyExit: (exitedPtyId: string) => void = () => {}
@@ -4025,6 +4027,15 @@ export function connectPanePty(
         : POST_REPLAY_REATTACH_RESET
     }
 
+    const hideParkedCursorAgentVisualCursor = (parkedCursorAgentScreen: boolean | null): void => {
+      if (parkedCursorAgentScreen !== true) {
+        return
+      }
+      // Why: Cursor Agent parks xterm's real cursor off-input and draws its own
+      // prompt. After reattach our reset made that parked cursor visible again.
+      writeReplayData(CURSOR_HIDE_SEQUENCE)
+    }
+
     const consumeRestoredViewportBlankingMarker = (): boolean => {
       return deps.restoredViewportBlankingPanesRef?.current.delete(pane.id) ?? false
     }
@@ -4042,6 +4053,8 @@ export function connectPanePty(
       // restored rows must leave the viewport before the first prompt redraw.
       writeFreshShellViewportBlanking()
     }
+
+    let reattachFocusInRepairTimer: ReturnType<typeof setTimeout> | null = null
 
     const sendFocusedReattachFocusInAfterReplay = (): void => {
       const scheduledGeneration = reattachReplayPayloadSignalGeneration
@@ -4063,7 +4076,8 @@ export function connectPanePty(
           !hasLiveAgentReattachStatusOrTitleSignal() &&
           reattachReplayPayloadHasCursorAgentSignal
         ) {
-          if (parsedViewportShowsParkedCursorAgentScreen(pane.terminal) === false) {
+          const parkedCursorAgentScreen = parsedViewportShowsParkedCursorAgentScreen(pane.terminal)
+          if (parkedCursorAgentScreen === false) {
             reattachReplayPayloadHasCursorAgentSignal = false
             // Why: the live-agent reset preserved the payload's ?25l; a plain
             // shell never re-shows the cursor itself.
@@ -4078,11 +4092,58 @@ export function connectPanePty(
         // cursor anchors the IME/caret to the wrong cell. Gated on ?1004h so a
         // bare shell never receives a stray \x1b[I.
         const sendFocusMode = terminalHasFocusReportingEnabled(pane.terminal)
-        if (!shouldSendFocusedAgentReattachFocusIn() || !sendFocusMode) {
+        const shouldSendFocusIn = shouldSendFocusedAgentReattachFocusIn()
+        if (!shouldSendFocusIn || !sendFocusMode) {
           return
         }
         transport.sendInput(TERMINAL_FOCUS_IN_SEQUENCE)
+        syncCursorAgentImeTextareaAnchor(pane.terminal)
+        const parkedCursorAgentScreen = parsedViewportShowsParkedCursorAgentScreen(pane.terminal)
+        hideParkedCursorAgentVisualCursor(parkedCursorAgentScreen)
+        if (parkedCursorAgentScreen === true) {
+          scheduleFocusedReattachFocusInRepair()
+        }
       })
+    }
+
+    function clearReattachFocusInRepairTimer(): void {
+      if (reattachFocusInRepairTimer !== null) {
+        clearTimeout(reattachFocusInRepairTimer)
+        reattachFocusInRepairTimer = null
+      }
+    }
+    function sendFocusedReattachFocusInIfStillParked(): void {
+      const scheduledGeneration = reattachReplayPayloadSignalGeneration
+      void waitForTerminalOutputParsed(pane.terminal).then(() => {
+        if (disposed) {
+          return
+        }
+        if (scheduledGeneration !== reattachReplayPayloadSignalGeneration) {
+          return
+        }
+        if (!reattachReplayPayloadHasCursorAgentSignal) {
+          return
+        }
+        const parkedCursorAgentScreen = parsedViewportShowsParkedCursorAgentScreen(pane.terminal)
+        if (parkedCursorAgentScreen === false) {
+          return
+        }
+        const sendFocusMode = terminalHasFocusReportingEnabled(pane.terminal)
+        const shouldSendFocusIn = shouldSendFocusedAgentReattachFocusIn()
+        if (!shouldSendFocusIn || !sendFocusMode) {
+          return
+        }
+        transport.sendInput(TERMINAL_FOCUS_IN_SEQUENCE)
+        syncCursorAgentImeTextareaAnchor(pane.terminal)
+        hideParkedCursorAgentVisualCursor(parkedCursorAgentScreen)
+      })
+    }
+    function scheduleFocusedReattachFocusInRepair(delayMs = 150): void {
+      clearReattachFocusInRepairTimer()
+      reattachFocusInRepairTimer = setTimeout(() => {
+        reattachFocusInRepairTimer = null
+        sendFocusedReattachFocusInIfStillParked()
+      }, delayMs)
     }
 
     let replayWriteQueue = Promise.resolve()
@@ -5262,6 +5323,20 @@ export function connectPanePty(
       unregisterDocumentVisibilityRecovery = () =>
         document.removeEventListener('visibilitychange', onDocumentVisibilityChange)
     }
+    if (
+      typeof window !== 'undefined' &&
+      typeof window.addEventListener === 'function' &&
+      typeof window.removeEventListener === 'function'
+    ) {
+      const onWindowFocus = (): void => {
+        // Why: xterm may report focus-out during app blur while Chromium keeps
+        // the helper textarea as DOM focus; repair Cursor Agent's parked cursor
+        // once the app is active again.
+        sendFocusedReattachFocusInIfStillParked()
+      }
+      window.addEventListener('focus', onWindowFocus)
+      unregisterWindowFocusReattachRepair = () => window.removeEventListener('focus', onWindowFocus)
+    }
 
     const dataCallback = (data: string, meta?: PtyDataMeta): void => {
       if (data.length > 0) {
@@ -6298,6 +6373,8 @@ export function connectPanePty(
       unregisterBacklogRecovery = null
       unregisterDocumentVisibilityRecovery?.()
       unregisterDocumentVisibilityRecovery = null
+      unregisterWindowFocusReattachRepair?.()
+      unregisterWindowFocusReattachRepair = null
       reportPanePtyVisibility(activePanePtyBinding ?? transport.getPtyId(), false)
       clearPanePtyFitBinding()
       discardTerminalOutput(pane.terminal)

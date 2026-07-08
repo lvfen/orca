@@ -555,6 +555,52 @@ function configureTerminalFocusMode(
   })
 }
 
+type FakeTerminalCell = {
+  chars: string
+  width: number
+}
+
+function makeFakeTerminalLine(text: string, cols = 120) {
+  const cells: FakeTerminalCell[] = Array.from(text).map((chars) => ({ chars, width: 1 }))
+  while (cells.length < cols) {
+    cells.push({ chars: '', width: 1 })
+  }
+
+  return {
+    length: cells.length,
+    getCell: (column: number) => {
+      const cell = cells[column]
+      return cell
+        ? {
+            getChars: () => cell.chars,
+            getWidth: () => cell.width
+          }
+        : undefined
+    },
+    translateToString: (trimRight = false, startColumn = 0, endColumn = cells.length) => {
+      let result = ''
+      for (let column = startColumn; column < endColumn; column++) {
+        result += cells[column]?.chars || ' '
+      }
+      return trimRight ? result.replace(/\s+$/, '') : result
+    }
+  }
+}
+
+function configureParkedCursorAgentBuffer(pane: ReturnType<typeof createPane>): void {
+  const lines = Array.from({ length: pane.terminal.rows }, () => '')
+  lines[3] = '  Cursor Agent'
+  lines[8] = '  → Plan, search, build anything'
+  const bufferLines = lines.map((line) => makeFakeTerminalLine(line, pane.terminal.cols))
+  Object.assign(pane.terminal.buffer.active, {
+    baseY: 0,
+    cursorX: 0,
+    cursorY: pane.terminal.rows - 1,
+    length: bufferLines.length,
+    getLine: (row: number) => bufferLines[row]
+  })
+}
+
 const ANSI_POSITIONED_CURSOR_AGENT_REATTACH_SCREEN =
   '\x1b[4;3HCursor Agent\x1b[5;3Hv2026.06.29\x1b[9;3H→ Plan, search, build anything'
 
@@ -5441,7 +5487,10 @@ describe('connectPanePty', () => {
     const transport = createMockTransport()
     transport.connect.mockImplementation(async ({ sessionId }: { sessionId?: string }) => {
       if (sessionId) {
-        return { id: sessionId, snapshot: '\x1b[?1004h\x1b[?25lrestored cursor snapshot' }
+        return {
+          id: sessionId,
+          snapshot: `\x1b[?1004h\x1b[?25l${ANSI_POSITIONED_CURSOR_AGENT_REATTACH_SCREEN}`
+        }
       }
       return null
     })
@@ -5453,6 +5502,7 @@ describe('connectPanePty', () => {
     // Why: public xterm modes plus an agent title are the stable signal for a
     // live focus-driven TUI; avoid private `_core` field probes.
     configureTerminalFocusMode(pane, textarea)
+    configureParkedCursorAgentBuffer(pane)
     await withMockedDocumentActiveElement(textarea, async () => {
       const manager = createManager(1)
       const deps = createDeps({
@@ -5508,6 +5558,47 @@ describe('connectPanePty', () => {
         POST_REPLAY_LIVE_AGENT_REATTACH_RESET,
         expect.any(Function)
       )
+      expect(pane.terminal.write).toHaveBeenCalledWith('\x1b[?25l', expect.any(Function))
+    })
+  })
+
+  it('repairs focus-in on window focus when focused agent reattach remains parked', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    const transport = createMockTransport()
+    transport.connect.mockImplementation(async ({ sessionId }: { sessionId?: string }) => {
+      if (sessionId) {
+        return {
+          id: sessionId,
+          snapshot: `\x1b[?1004h\x1b[?25l${ANSI_POSITIONED_CURSOR_AGENT_REATTACH_SCREEN}`
+        }
+      }
+      return null
+    })
+    transportFactoryQueue.push(transport)
+    setReattachPaneTitle('Cursor Agent')
+
+    const pane = createPane(1)
+    const textarea = {} as HTMLTextAreaElement
+    configureTerminalFocusMode(pane, textarea)
+    configureParkedCursorAgentBuffer(pane)
+    await withMockedDocumentActiveElement(textarea, async () => {
+      const manager = createManager(1)
+      const deps = createDeps({
+        restoredLeafId: LEAF_1,
+        restoredPtyIdByLeafId: { [LEAF_1]: 'tab-pty' }
+      })
+
+      connectPanePty(pane as never, manager as never, deps as never)
+      await flushAsyncTicks(20)
+      transport.sendInput.mockClear()
+
+      const addEventListener = globalThis.window.addEventListener as ReturnType<typeof vi.fn>
+      const onWindowFocus = addEventListener.mock.calls.find(([type]) => type === 'focus')?.[1]
+      expect(onWindowFocus).toBeTypeOf('function')
+      ;(onWindowFocus as () => void)()
+      await flushAsyncTicks(10)
+
+      expect(transport.sendInput).toHaveBeenCalledWith('\x1b[I')
     })
   })
 
