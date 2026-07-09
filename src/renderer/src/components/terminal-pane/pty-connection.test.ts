@@ -601,6 +601,27 @@ function configureParkedCursorAgentBuffer(pane: ReturnType<typeof createPane>): 
   })
 }
 
+function configureFullScreenCursorAgentFollowupBuffer(pane: ReturnType<typeof createPane>): void {
+  const lines = Array.from({ length: pane.terminal.rows }, () => '')
+  lines[0] = 'The mock briefing includes orbit_id, relay_mode, crew_id, and badge_color.'
+  lines[2] = 'Field Notes'
+  lines[3] = '1. The console shell owns navigation and panel layout.'
+  lines[4] = '2. The bridge layer opens the pretend beacon picker.'
+  lines[5] = '3. Routes include orbit feed, station room, and copy link.'
+  lines[7] = 'Ask for any mock launch section and I can expand the invented details.'
+  lines[pane.terminal.rows - 5] = '  → Add a follow-up'
+  lines[pane.terminal.rows - 2] = 'Composer 2.5 · MAX · 30%'
+  lines[pane.terminal.rows - 1] = '~/workspace/demo-orbit-console · feature/mock-followup'
+  const bufferLines = lines.map((line) => makeFakeTerminalLine(line, pane.terminal.cols))
+  Object.assign(pane.terminal.buffer.active, {
+    baseY: 0,
+    cursorX: 0,
+    cursorY: pane.terminal.rows - 3,
+    length: bufferLines.length,
+    getLine: (row: number) => bufferLines[row]
+  })
+}
+
 const ANSI_POSITIONED_CURSOR_AGENT_REATTACH_SCREEN =
   '\x1b[4;3HCursor Agent\x1b[5;3Hv2026.06.29\x1b[9;3H→ Plan, search, build anything'
 
@@ -5599,6 +5620,41 @@ describe('connectPanePty', () => {
       await flushAsyncTicks(10)
 
       expect(transport.sendInput).toHaveBeenCalledWith('\x1b[I')
+    })
+  })
+
+  it('repairs focus-in when full-screen Cursor Agent content hides the header', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    const transport = createMockTransport()
+    transport.connect.mockImplementation(async ({ sessionId }: { sessionId?: string }) => {
+      if (sessionId) {
+        return {
+          id: sessionId,
+          snapshot: `\x1b[?1004h\x1b[?25l${ANSI_POSITIONED_CURSOR_AGENT_REATTACH_SCREEN}`
+        }
+      }
+      return null
+    })
+    transportFactoryQueue.push(transport)
+    setReattachPaneTitle('Cursor Agent')
+
+    const pane = createPane(1)
+    const textarea = {} as HTMLTextAreaElement
+    configureTerminalFocusMode(pane, textarea)
+    Object.assign(pane.terminal.modes, { sendFocusMode: false })
+    configureFullScreenCursorAgentFollowupBuffer(pane)
+    await withMockedDocumentActiveElement(textarea, async () => {
+      const manager = createManager(1)
+      const deps = createDeps({
+        restoredLeafId: LEAF_1,
+        restoredPtyIdByLeafId: { [LEAF_1]: 'tab-pty' }
+      })
+
+      connectPanePty(pane as never, manager as never, deps as never)
+      await flushAsyncTicks(20)
+
+      expect(transport.sendInput).toHaveBeenCalledWith('\x1b[I')
+      expect(pane.terminal.write).toHaveBeenCalledWith('\x1b[?25l', expect.any(Function))
     })
   })
 

@@ -8,6 +8,7 @@ export type TerminalImeAnchor = {
 const CURSOR_AGENT_HEADER = 'Cursor Agent'
 const CURSOR_AGENT_INPUT_MARKER = '→'
 const CURSOR_AGENT_EMPTY_PROMPT = 'Plan, search, build anything'
+const CURSOR_AGENT_FOLLOWUP_PROMPT = 'Add a follow-up'
 const CURSOR_AGENT_HEADER_SCAN_ROWS = 6
 
 export function resolveCursorAgentImeAnchor(args: {
@@ -21,6 +22,14 @@ export function resolveCursorAgentImeAnchor(args: {
   if (args.cursorX !== 0 || !isBlankLine(cursorLine)) {
     return null
   }
+  return resolveCursorAgentVisibleInputAnchor(args)
+}
+
+export function resolveCursorAgentVisibleInputAnchor(args: {
+  buffer: IBuffer
+  rows: number
+  cols: number
+}): TerminalImeAnchor | null {
   return findCursorAgentScreenInputAnchor(args)
 }
 
@@ -29,9 +38,7 @@ function findCursorAgentScreenInputAnchor(args: {
   rows: number
   cols: number
 }): TerminalImeAnchor | null {
-  if (!hasCursorAgentHeader(args.buffer, args.rows)) {
-    return null
-  }
+  const hasHeader = hasCursorAgentHeader(args.buffer, args.rows)
 
   // Why: the input box sits below the transcript, so scan bottom-up — a
   // transcript line containing "→ " (e.g. a rename diff) must not win.
@@ -40,7 +47,7 @@ function findCursorAgentScreenInputAnchor(args: {
     if (!line) {
       continue
     }
-    const column = resolveCursorAgentInputColumn(line, args.cols)
+    const column = resolveCursorAgentInputColumn(line, args.cols, { hasHeader })
     if (column !== null) {
       return { row, column: Math.min(column, Math.max(args.cols - 1, 0)) }
     }
@@ -63,13 +70,25 @@ function hasCursorAgentHeader(buffer: IBuffer, rows: number): boolean {
   return false
 }
 
-function resolveCursorAgentInputColumn(line: IBufferLine, cols: number): number | null {
+function resolveCursorAgentInputColumn(
+  line: IBufferLine,
+  cols: number,
+  opts: { hasHeader: boolean }
+): number | null {
   const inputColumn = findCursorAgentInputStartColumn(line, cols)
   if (inputColumn === null) {
     return null
   }
 
   const inputText = line.translateToString(true, inputColumn, cols)
+  if (inputText.startsWith(CURSOR_AGENT_FOLLOWUP_PROMPT)) {
+    return inputColumn
+  }
+
+  if (!opts.hasHeader) {
+    return null
+  }
+
   if (!inputText.trim() || inputText.startsWith(CURSOR_AGENT_EMPTY_PROMPT)) {
     return inputColumn
   }

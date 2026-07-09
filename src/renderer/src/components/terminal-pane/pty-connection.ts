@@ -2,7 +2,10 @@
 import type { PaneManager, ManagedPane } from '@/lib/pane-manager/pane-manager'
 import type { ManagedPaneInternal } from '@/lib/pane-manager/pane-manager-types'
 import type { IBuffer, IDisposable } from '@xterm/xterm'
-import { resolveCursorAgentImeAnchor } from '@/lib/pane-manager/terminal-ime-anchor'
+import {
+  resolveCursorAgentImeAnchor,
+  resolveCursorAgentVisibleInputAnchor
+} from '@/lib/pane-manager/terminal-ime-anchor'
 import { syncCursorAgentImeTextareaAnchor } from '@/lib/pane-manager/terminal-ime-textarea-anchor'
 import { detectAgentStatusFromTitle, agentTypeToIconAgent, isClaudeAgent } from '@/lib/agent-status'
 import { resolvePaneTitleDecision } from './terminal-title-evidence'
@@ -279,6 +282,24 @@ function parsedViewportShowsParkedCursorAgentScreen(
       cursorY: buffer.cursorY
     }) !== null
   )
+}
+
+function cursorAgentAnchorMatchesCursor(terminal: TerminalWithInspectableBuffer): boolean {
+  const buffer = terminal.buffer?.active
+  if (
+    !buffer ||
+    typeof buffer.getLine !== 'function' ||
+    typeof buffer.cursorX !== 'number' ||
+    typeof buffer.cursorY !== 'number'
+  ) {
+    return false
+  }
+  const anchor = resolveCursorAgentVisibleInputAnchor({
+    buffer,
+    rows: terminal.rows,
+    cols: terminal.cols
+  })
+  return anchor !== null && anchor.row === buffer.cursorY && anchor.column === buffer.cursorX
 }
 
 function terminalHasFocusReportingEnabled(terminal: TerminalWithFocusMode): boolean {
@@ -1085,6 +1106,7 @@ export function connectPanePty(
   let terminalBellNotificationTimer: ReturnType<typeof setTimeout> | null = null
   let pendingTerminalBellNotification = false
   let reattachIdleAgentCursorResetTimer: ReturnType<typeof setTimeout> | null = null
+  let cursorAgentImeVisualCursorHidden = false
   let alternateScreenBackgroundRepaintTimer: ReturnType<typeof setTimeout> | null = null
   let synchronizedForegroundOutputActive = false
   // Why: tracks the keystroke proximity captured when the current synchronized
@@ -4098,12 +4120,31 @@ export function connectPanePty(
         // bare shell never receives a stray \x1b[I.
         const sendFocusMode = terminalHasFocusReportingEnabled(pane.terminal)
         const shouldSendFocusIn = shouldSendFocusedAgentReattachFocusIn()
+        const parkedCursorAgentScreen = parsedViewportShowsParkedCursorAgentScreen(pane.terminal)
+        let sentAnchorFocusIn = false
+        if (parkedCursorAgentScreen === true) {
+          syncCursorAgentImeTextareaAnchor(pane.terminal)
+          const cursorAtAnchor = cursorAgentAnchorMatchesCursor(pane.terminal)
+          // Why: full-screen Cursor Agent follow-up views can drop ?1004 focus
+          // mode while still needing focus-in to redraw their own input caret.
+          if (terminalOwnsDomFocus(pane.terminal)) {
+            transport.sendInput(TERMINAL_FOCUS_IN_SEQUENCE)
+            sentAnchorFocusIn = true
+          }
+          if (cursorAtAnchor) {
+            cursorAgentImeVisualCursorHidden = false
+          } else {
+            hideParkedCursorAgentVisualCursor(parkedCursorAgentScreen)
+            cursorAgentImeVisualCursorHidden = true
+          }
+        }
         if (!shouldSendFocusIn || !sendFocusMode) {
           return
         }
-        transport.sendInput(TERMINAL_FOCUS_IN_SEQUENCE)
+        if (!sentAnchorFocusIn) {
+          transport.sendInput(TERMINAL_FOCUS_IN_SEQUENCE)
+        }
         syncCursorAgentImeTextareaAnchor(pane.terminal)
-        const parkedCursorAgentScreen = parsedViewportShowsParkedCursorAgentScreen(pane.terminal)
         hideParkedCursorAgentVisualCursor(parkedCursorAgentScreen)
         if (parkedCursorAgentScreen === true) {
           registerWindowFocusReattachRepair()
@@ -4514,6 +4555,10 @@ export function connectPanePty(
       const nativeWindowsCursorRestore =
         shouldProtectNativeWindowsSynchronizedOutput && foreground && containsCursorRestore(data)
       const foregroundOutput = foreground || parseHiddenStartupOutput
+      const foregroundOutputShowsCursor = foregroundOutput && data.includes(CURSOR_SHOW_SEQUENCE)
+      if (foregroundOutputShowsCursor) {
+        cursorAgentImeVisualCursorHidden = false
+      }
       if (foreground) {
         scheduleForegroundGridDriftCheck()
       }
@@ -4530,6 +4575,28 @@ export function connectPanePty(
         ? scheduleTerminalWebglAtlasRecovery
         : renderRefreshDecision.inPlaceRewrite
           ? alternateScreenRewriteAtlasRecoveryOnParsed()
+          : undefined
+      const onParsedCursorAgentImeRepair =
+        onParsedAtlasRecovery || foregroundOutputShowsCursor
+          ? (): void => {
+              onParsedAtlasRecovery?.()
+              if (!foregroundOutputShowsCursor) {
+                return
+              }
+              const anchor = syncCursorAgentImeTextareaAnchor(pane.terminal)
+              if (!anchor) {
+                return
+              }
+              const cursorAtAnchor = cursorAgentAnchorMatchesCursor(pane.terminal)
+              if (cursorAtAnchor) {
+                cursorAgentImeVisualCursorHidden = false
+                return
+              }
+              if (!cursorAgentImeVisualCursorHidden) {
+                pane.terminal.write(CURSOR_HIDE_SEQUENCE)
+                cursorAgentImeVisualCursorHidden = true
+              }
+            }
           : undefined
       const foregroundRenderRefreshNeeded = renderRefreshDecision.refresh
       // Why: see nativeWindowsRewriteNeedsFollowupRenderRefresh — Claude Code's
@@ -4577,7 +4644,7 @@ export function connectPanePty(
             foregroundRenderRefreshNeeded),
         followupForegroundRefresh:
           nativeWindowsCursorRestore || nativeWindowsInPlaceRewriteFollowup,
-        onParsed: onParsedAtlasRecovery,
+        onParsed: onParsedCursorAgentImeRepair,
         stripTransientCursorShows: shouldProtectNativeWindowsSynchronizedOutput && foreground,
         coalesceForeground: synchronizedForegroundOutput && synchronizedOutputEnded,
         holdForeground: synchronizedForegroundOutput && nextSynchronizedForegroundOutputActive

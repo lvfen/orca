@@ -75,7 +75,7 @@ describe('resolveCursorAgentImeAnchor', () => {
       '',
       '',
       '  Composer 2.5',
-      '  ~/development/code/xinyue/app_android · develop/app6.5.1',
+      '  ~/workspace/demo-orbit-console · feature/mock-routing',
       ''
     ])
 
@@ -138,6 +138,49 @@ describe('resolveCursorAgentImeAnchor', () => {
         cursorY: 6
       })
     ).toEqual({ row: 5, column: 4 })
+  })
+
+  it('anchors the follow-up prompt when full-screen content scrolls the header away', () => {
+    const buffer = makeBuffer([
+      'The mock briefing includes orbit_id, relay_mode, crew_id, and badge_color.',
+      '',
+      'Field Notes',
+      '1. The console shell owns navigation and panel layout.',
+      '2. The bridge layer opens the pretend beacon picker.',
+      '3. Routes include orbit feed, station room, and copy link.',
+      '',
+      'Ask for any mock launch section and I can expand the invented details.',
+      '',
+      '  → Add a follow-up',
+      '',
+      'Composer 2.5 · MAX · 30%',
+      '~/workspace/demo-orbit-console · feature/mock-followup',
+      ''
+    ])
+
+    expect(
+      resolveCursorAgentImeAnchor({
+        buffer,
+        rows: 14,
+        cols: 100,
+        cursorX: 0,
+        cursorY: 13
+      })
+    ).toEqual({ row: 9, column: 4 })
+  })
+
+  it('does not treat headerless typed arrow lines as Cursor Agent input', () => {
+    const buffer = makeBuffer(['', '  → run tests', ''])
+
+    expect(
+      resolveCursorAgentImeAnchor({
+        buffer,
+        rows: 3,
+        cols: 80,
+        cursorX: 0,
+        cursorY: 2
+      })
+    ).toBeNull()
   })
 
   it('uses cell width when anchoring after typed Cursor Agent input', () => {
