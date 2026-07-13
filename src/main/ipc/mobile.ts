@@ -1,13 +1,14 @@
-import { app, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
+import { BrowserWindow, app, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { networkInterfaces } from 'node:os'
 import QRCode from 'qrcode'
-import { decodeRelayCertificateToken } from '../../shared/relay-certificate-token'
 import type { DesktopRelayV2Status } from '../../shared/relay-v2-desktop'
 import { encodeRelayV2InviteQrPayload } from '../../shared/relay-v2-invite-qr'
 import type { RuntimeAccessGrant } from '../../shared/runtime-access-grants'
 import { isTailnetIPv4Address } from '../../shared/tailnet-address'
 import type { DeviceEntry } from '../runtime/device-registry'
 import type { OrcaRuntimeRpcServer } from '../runtime/runtime-rpc'
+import { discoverRelayCertificateToken } from './relay-certificate-discovery'
+import { installRelayCertificateToken } from './relay-certificate-installation'
 import {
   getWebSocketPort,
   inspectWindowsMobileFirewall,
@@ -19,8 +20,6 @@ export type NetworkInterface = {
   name: string
   address: string
 }
-
-const execFileAsync = promisify(execFile)
 
 // Why: the WebSocket transport advertises 0.0.0.0 as its endpoint, which isn't
 // connectable from a mobile device. We enumerate all non-internal IPv4
@@ -71,6 +70,12 @@ export function registerMobileHandlers(
   rpcServer: OrcaRuntimeRpcServer,
   dependencies: MobileHandlerDependencies = {}
 ): void {
+  const relayV2StatusChange = getRelayV2StatusChangeSource(rpcServer)
+  relayV2StatusChange?.((status) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send('mobile:v2:statusChanged', status)
+    }
+  })
   const firewallEnvironment = dependencies.firewallEnvironment ?? {
     platform: process.platform,
     isPackaged: app.isPackaged,
@@ -215,6 +220,46 @@ export function registerMobileHandlers(
     }
   })
 
+  ipcMain.handle('mobile:v2:getSettings', () => rpcServer.getRelayV2Settings())
+  ipcMain.handle('mobile:v2:saveRelayUrl', (_event, args: { relayUrl: string }) =>
+    rpcServer.saveRelayV2Url(typeof args?.relayUrl === 'string' ? args.relayUrl.trim() : '')
+  )
+  ipcMain.handle('mobile:v2:clearSettings', async () => {
+    await rpcServer.clearRelayV2Settings()
+    return { ok: true as const }
+  })
+  ipcMain.handle('mobile:v2:getStatus', () => rpcServer.getRelayV2Status())
+  ipcMain.handle(
+    'mobile:v2:createInvite',
+    async (_event, args: { mode: 'keep-existing' | 'disconnect-existing' }) => {
+      const mode = args?.mode === 'disconnect-existing' ? 'disconnect-existing' : 'keep-existing'
+      const result = await rpcServer.createRelayV2Invite(mode)
+      if (!result.ok) {
+        return result
+      }
+      const qrScanPayload = encodeRelayV2InviteQrPayload(result.invite.qrPayload)
+      const qrDataUrl = await QRCode.toDataURL(qrScanPayload, {
+        errorCorrectionLevel: 'L',
+        margin: 3,
+        width: 360
+      })
+      return { ...result, invite: { ...result.invite, qrScanPayload, qrDataUrl } }
+    }
+  )
+  ipcMain.handle('mobile:v2:installCertificateToken', (_event, args: { token: string }) =>
+    installRelayCertificateToken(args, rpcServer)
+  )
+  ipcMain.handle(
+    'mobile:v2:installDiscoveredCertificate',
+    async (_event, args: { relayUrl: string }) => {
+      const relayUrl = typeof args?.relayUrl === 'string' ? args.relayUrl.trim() : ''
+      const discovery = await discoverRelayCertificateToken(relayUrl)
+      return discovery.ok
+        ? installRelayCertificateToken({ token: discovery.token }, rpcServer)
+        : discovery
+    }
+  )
+
   ipcMain.handle('mobile:getWindowsFirewallStatus', (_event, args?: { address?: string }) => {
     const port = getWebSocketPort(rpcServer.getWebSocketEndpoint())
     return inspectWindowsMobileFirewall(port, args?.address, firewallEnvironment)
@@ -239,6 +284,17 @@ export function registerMobileHandlers(
     await openSettings()
     return true
   })
+}
+
+function getRelayV2StatusChangeSource(
+  rpcServer: OrcaRuntimeRpcServer
+): ((listener: (status: DesktopRelayV2Status) => void) => () => void) | null {
+  const candidate = rpcServer as unknown as {
+    onRelayV2StatusChange?: (listener: (status: DesktopRelayV2Status) => void) => () => void
+  }
+  return typeof candidate.onRelayV2StatusChange === 'function'
+    ? candidate.onRelayV2StatusChange.bind(rpcServer)
+    : null
 }
 
 function isWindowRenderer(event: IpcMainInvokeEvent): boolean {

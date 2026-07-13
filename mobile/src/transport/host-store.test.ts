@@ -40,14 +40,16 @@ const HOST_ONE = {
   name: 'Host 1',
   endpoint: 'ws://127.0.0.1:1',
   publicKeyB64: 'key',
-  lastConnected: 0
+  lastConnected: 0,
+  kind: 'lan' as const
 }
 const HOST_TWO = {
   id: 'host-2',
   name: 'Host 2',
   endpoint: 'ws://127.0.0.1:2',
   publicKeyB64: 'key-2',
-  lastConnected: 0
+  lastConnected: 0,
+  kind: 'lan' as const
 }
 
 describe('host-store list mutations', () => {

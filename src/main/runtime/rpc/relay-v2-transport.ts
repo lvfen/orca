@@ -119,7 +119,7 @@ export class RelayV2Transport implements RpcTransport, MobileTransport {
     if (unavailable) {
       return Promise.resolve(unavailable)
     }
-    return this.inviteRequests.create(ws, mode, this.status)
+    return this.inviteRequests.create(ws!, mode, this.status)
   }
 
   private openConnection(): void {

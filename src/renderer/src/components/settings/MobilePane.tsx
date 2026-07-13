@@ -11,7 +11,9 @@ import { MobileNetworkInterfaceSection } from './MobileNetworkInterfaceSection'
 import { MobilePairingQrSection } from './MobilePairingQrSection'
 import { MobilePairedDevicesSection, type PairedDevice } from './MobilePairedDevicesSection'
 import { MobileAutoRestoreFitSection } from './MobileAutoRestoreFitSection'
+import { MobileRelaySection } from './MobileRelaySection'
 import { WindowsFirewallNotice } from '../mobile/WindowsFirewallNotice'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
 import { translate } from '@/i18n/i18n'
 export { getMobilePaneSearchEntries } from './mobile-pane-search'
 
@@ -186,13 +188,30 @@ export function MobilePane(): React.JSX.Element {
             onGenerateQr={() => void generateQR({ rotate: qrDataUrl != null })}
           />
 
-      <WindowsFirewallNotice pairingReady={qrDataUrl != null} address={selectedAddress} />
+          <MobilePairingQrSection
+            qrDataUrl={qrDataUrl}
+            pairingUrl={pairingUrl}
+            endpoint={endpoint}
+            qrEnlarged={qrEnlarged}
+            codeCopied={codeCopied}
+            onQrEnlargedChange={setQrEnlarged}
+            onCodeCopiedChange={setCodeCopied}
+            onClearCodeCopiedTimer={clearCodeCopiedResetTimer}
+          />
 
-      <MobilePairedDevicesSection
-        devices={devices}
-        hasQrCode={qrDataUrl != null}
-        onRevokeDevice={(deviceId) => void revokeDevice(deviceId)}
-      />
+          <WindowsFirewallNotice pairingReady={qrDataUrl != null} address={selectedAddress} />
+
+          <MobilePairedDevicesSection
+            devices={devices}
+            hasQrCode={qrDataUrl != null}
+            onRevokeDevice={(deviceId) => void revokeDevice(deviceId)}
+          />
+        </TabsContent>
+
+        <TabsContent value="relay">
+          <MobileRelaySection />
+        </TabsContent>
+      </Tabs>
 
       <MobileAutoRestoreFitSection
         autoRestoreFitMs={autoRestoreFitMs}

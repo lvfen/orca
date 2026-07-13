@@ -64,7 +64,9 @@ export const WORKTREE_METHODS: RpcMethod[] = [
       // wake to phones so web/desktop activation behavior is unchanged.
       runtime.activateManagedWorktree(params.worktree, {
         notifyClients: params.notifyClients !== false,
-        clientKind
+        // Why: relay-scoped credentials are phones transported through the
+        // relay, so they use the same wake behavior as direct mobile clients.
+        clientKind: clientKind === 'relay' ? 'mobile' : clientKind
       })
   }),
   defineMethod({

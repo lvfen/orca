@@ -17,6 +17,8 @@ import type { MobileTransport, RpcMessageContext, RpcTransport } from './rpc/tra
 import { UnixSocketTransport } from './rpc/unix-socket-transport'
 import { WebSocketTransport } from './rpc/ws-transport'
 import { readWsFallbackPort, writeWsFallbackPort } from './rpc/ws-fallback-port-store'
+import { RelayTransport, type RelayStatus } from './rpc/relay-transport'
+import { RelayV2Transport } from './rpc/relay-v2-transport'
 import type { WebSocket } from 'ws'
 import { DeviceRegistry, type DeviceScope } from './device-registry'
 import { loadOrCreateE2EEKeypair, type E2EEKeypair } from './e2ee-keypair'
@@ -1310,7 +1312,9 @@ export class OrcaRuntimeRpcServer {
         clientId: token,
         // Why: gates the mobile-only payload diet (native-chat char clipping) so
         // full-screen web/desktop runtime clients aren't truncated.
-        clientKind: device.scope,
+        // Why: relay credentials still represent a phone client at the RPC
+        // boundary; only runtime-scoped credentials receive desktop behavior.
+        clientKind: device.scope === 'runtime' ? 'runtime' : 'mobile',
         signal: abortRegistration?.signal,
         sendBinary,
         registerBinaryStreamHandler: (streamId, handler) =>
