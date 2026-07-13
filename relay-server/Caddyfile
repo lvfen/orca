@@ -1,0 +1,6 @@
+# Caddy terminates TLS and reverse-proxies WebSocket upgrades to the relay.
+# Caddy auto-provisions and renews the certificate for {$RELAY_DOMAIN}.
+# WebSocket upgrade headers are forwarded transparently by reverse_proxy.
+{$RELAY_DOMAIN} {
+	reverse_proxy relay:6770
+}

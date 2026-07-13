@@ -1,10 +1,4 @@
-import type {
-  RpcResponse,
-  RpcSuccess,
-  ConnectionState,
-  ConnectionLogLevel,
-  ConnectionLogSink
-} from './types'
+import type { RpcResponse, RpcSuccess, ConnectionState, ConnectionLogLevel } from './types'
 import {
   generateKeyPair,
   deriveSharedKey,
@@ -15,20 +9,43 @@ import {
   decryptBytes
 } from './e2ee'
 import {
-  handleTerminalBinaryFrame,
-  type TerminalSnapshotState
-} from './rpc-client-terminal-binary-frame'
-import {
-  decodeBrowserScreencastFrame,
-  type BrowserScreencastFrame
-} from './browser-screencast-protocol'
+  isTerminalSubscribedResult,
+  isBrowserScreencastReadyResult
+} from './rpc-client-frame-decoding'
+import { createRpcClientBinaryHandler } from './rpc-client-binary-handler'
+import type { TerminalSnapshotState } from './rpc-client-terminal-binary-frame'
 import {
   buildTerminalUnsubscribeParams,
   updateTerminalSubscriptionViewport as updateCachedTerminalSubscriptionViewport
 } from './rpc-client-terminal-subscription'
 import { describeSocketEvent } from './socket-event-debug'
+import { RelayCloseCode, encodeClientJoin, parseRelayControlFrame } from './relay-protocol'
 import { isRpcResponse } from './rpc-response-shape'
 import { websocketPayloadToUint8 } from './websocket-payload-bytes'
+import { websocketCloseLogDetail } from './websocket-close-log-detail'
+import { startRelayV2PreHandshake, type RelayV2PreHandshake } from './relay-v2-prehandshake'
+import { redactedEndpoint } from './redacted-endpoint'
+import {
+  ACTIVITY_PROBE_INTERVAL_MS,
+  AUTH_RETRY_BUDGET,
+  CONNECT_TIMEOUT_MS,
+  GIVE_UP_AFTER_ATTEMPTS,
+  HANDSHAKE_TIMEOUT_MS,
+  RECONNECT_DELAYS,
+  RELAY_JOIN_TIMEOUT_MS,
+  REQUEST_TIMEOUT_MS,
+  WEBSOCKET_CONNECTING_STATE
+} from './rpc-client-connection-policy'
+import type {
+  ConnectOptions,
+  ConnectWaiter,
+  PendingRequest,
+  RpcClient,
+  SendRequestOptions,
+  StreamRequest,
+  StreamingListener,
+  SubscribeOptions
+} from './rpc-client-contract'
 
 type PendingRequest = {
   resolve: (response: RpcResponse) => void
@@ -162,6 +179,10 @@ export function connect(
       : (optionsOrLegacy ?? {})
   const onStateChange = options.onStateChange
   const onLog = options.onLog
+  // Why: relay mode runs an extra client-join → room-ready step on top of the
+  // shared E2EE handshake. null = direct LAN host (no pre-handshake).
+  const relayMobileToken = options.relay?.mobileToken ?? null
+  const relayV2 = options.relayV2 ?? null
   let logCounter = 0
   function emitLog(level: ConnectionLogLevel, message: string, detail?: string) {
     if (!onLog) {
@@ -182,6 +203,8 @@ export function connect(
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let connectTimer: ReturnType<typeof setTimeout> | null = null
   let handshakeTimer: ReturnType<typeof setTimeout> | null = null
+  let relayJoinTimer: ReturnType<typeof setTimeout> | null = null
+  let relayV2PreHandshake: RelayV2PreHandshake | null = null
   let activityProbeTimer: ReturnType<typeof setInterval> | null = null
   let intentionallyClosed = false
   // Why: consecutive auth rejections since the last successful connect. We
@@ -210,6 +233,13 @@ export function connect(
   const terminalSnapshots = new Map<number, TerminalSnapshotState>()
   let activeBrowserScreencastRequestId: string | null = null
   let pendingBrowserScreencastRequestId: string | null = null
+  const handleBinaryFrame = createRpcClientBinaryHandler({
+    streamListeners,
+    terminalStreamListeners,
+    terminalSnapshots,
+    getActiveBrowserScreencastRequestId: () => activeBrowserScreencastRequestId,
+    recordValidatedInboundTraffic
+  })
   const stateListeners = new Set<(state: ConnectionState) => void>()
   const connectWaiters: ConnectWaiter[] = []
 
@@ -258,24 +288,17 @@ export function connect(
         }
         waiter.resolve()
       }
-    } else if (next === 'disconnected' || next === 'auth-failed') {
+    } else if (next === 'disconnected' || next === 'auth-failed' || next === 'occupied') {
       const reason =
-        next === 'auth-failed' ? 'Unauthorized — pairing may be revoked' : 'Connection closed'
+        next === 'auth-failed'
+          ? 'Unauthorized — pairing may be revoked'
+          : next === 'occupied'
+            ? 'Connection taken over by another device'
+            : 'Connection closed'
       rejectConnectWaiters(reason)
     }
     for (const listener of stateListeners) {
       listener(next)
-    }
-  }
-
-  // Why: don't dump device tokens / full URLs into log scrolls; truncate to
-  // the host:port so reconnect lifecycles are still readable.
-  function redactedEndpoint(ep: string): string {
-    try {
-      const m = ep.match(/^wss?:\/\/([^/]+)/i)
-      return m ? m[1] : 'unknown'
-    } catch {
-      return 'unknown'
     }
   }
 
@@ -349,6 +372,42 @@ export function connect(
 
     ws = new WebSocket(endpoint)
     const openingWs = ws
+    // Why: relay-only — true between client-join and room-ready. While set we
+    // only accept relay control frames and hold back the E2EE hello.
+    let awaitingRoomReady = false
+
+    function beginE2EEHandshake() {
+      setState('handshaking')
+      // Why: generate a fresh ephemeral keypair for each connection. This
+      // provides forward secrecy — compromising one session's key doesn't
+      // compromise past or future sessions.
+      const ephemeral = generateKeyPair()
+      const hello = JSON.stringify({
+        type: 'e2ee_hello',
+        publicKeyB64: publicKeyToBase64(ephemeral.publicKey)
+      })
+      openingWs.send(hello)
+      emitLog('info', 'Sent e2ee_hello', 'Awaiting server e2ee_ready')
+
+      sharedKey = deriveSharedKey(ephemeral.secretKey, serverPublicKey)
+
+      handshakeTimer = setTimeout(() => {
+        handshakeTimer = null
+        if (ws !== openingWs || state !== 'handshaking') {
+          return
+        }
+        console.log('[net] handshake-timeout fired (e2ee_authenticated never arrived)', {
+          timeoutMs: HANDSHAKE_TIMEOUT_MS
+        })
+        emitLog(
+          'error',
+          'Handshake timeout',
+          `No e2ee_ready/e2ee_authenticated within ${HANDSHAKE_TIMEOUT_MS / 1000}s`
+        )
+        openingWs.close()
+      }, HANDSHAKE_TIMEOUT_MS)
+    }
+
     const ignoreStaleSocketEvent = (eventName: string): boolean => {
       if (ws === openingWs) {
         return false
@@ -391,38 +450,56 @@ export function connect(
       }
       console.log('[net] ws.onopen', { attempt: reconnectAttempt })
       clearConnectTimer()
-      reconnectAttempt = 0
-      setState('handshaking')
-      emitLog('success', 'WebSocket open', 'Starting E2EE handshake')
 
-      // Why: generate a fresh ephemeral keypair for each connection.
-      // This provides forward secrecy — compromising one session's key
-      // doesn't compromise past or future sessions.
-      const ephemeral = generateKeyPair()
-      const hello = JSON.stringify({
-        type: 'e2ee_hello',
-        publicKeyB64: publicKeyToBase64(ephemeral.publicKey)
-      })
-      openingWs.send(hello)
-      emitLog('info', 'Sent e2ee_hello', 'Awaiting server e2ee_ready')
-
-      sharedKey = deriveSharedKey(ephemeral.secretKey, serverPublicKey)
-
-      handshakeTimer = setTimeout(() => {
-        handshakeTimer = null
-        if (ws !== openingWs || state !== 'handshaking') {
-          return
-        }
-        console.log('[net] handshake-timeout fired (e2ee_authenticated never arrived)', {
-          timeoutMs: HANDSHAKE_TIMEOUT_MS
-        })
+      if (relayV2) {
+        setState('handshaking')
         emitLog(
-          'error',
-          'Handshake timeout',
-          `No e2ee_ready/e2ee_authenticated within ${HANDSHAKE_TIMEOUT_MS / 1000}s`
+          'success',
+          'WebSocket open',
+          relayV2.mode === 'join' ? 'Joining relay v2 channel' : 'Resuming relay v2 channel'
         )
-        openingWs.close()
-      }, HANDSHAKE_TIMEOUT_MS)
+        relayV2PreHandshake = startRelayV2PreHandshake({
+          ws: openingWs,
+          relayV2,
+          timeoutMs: RELAY_JOIN_TIMEOUT_MS,
+          emitLog,
+          onTimeout: () => {
+            if (ws === openingWs) {
+              openingWs.close()
+            }
+          },
+          beginE2EEHandshake
+        })
+        return
+      }
+
+      if (relayMobileToken) {
+        // Why: relay hosts must claim the room before any E2EE bytes flow.
+        // Send client-join and defer the E2EE hello until room-ready arrives.
+        setState('handshaking')
+        emitLog('success', 'WebSocket open', 'Joining relay room')
+        openingWs.send(encodeClientJoin(relayMobileToken))
+        awaitingRoomReady = true
+        emitLog('info', 'Sent client-join', 'Awaiting room-ready')
+        relayJoinTimer = setTimeout(() => {
+          relayJoinTimer = null
+          if (ws === openingWs && awaitingRoomReady) {
+            console.log('[net] relay-join-timeout fired (room-ready never arrived)', {
+              timeoutMs: RELAY_JOIN_TIMEOUT_MS
+            })
+            emitLog(
+              'error',
+              'Relay join timeout',
+              `No room-ready within ${RELAY_JOIN_TIMEOUT_MS / 1000}s — desktop offline?`
+            )
+            openingWs.close()
+          }
+        }, RELAY_JOIN_TIMEOUT_MS)
+        return
+      }
+
+      emitLog('success', 'WebSocket open', 'Starting E2EE handshake')
+      beginE2EEHandshake()
     }
 
     ws.onmessage = (event) => {
@@ -435,6 +512,40 @@ export function connect(
     async function handleSocketMessage(rawData: unknown) {
       lastInboundAt = Date.now()
       const raw = typeof rawData === 'string' ? rawData : null
+
+      // Why: relay pre-handshake — until room-ready we only accept relay
+      // control frames; E2EE bytes start flowing only after the room is
+      // claimed (host present). host-offline keeps the socket parked until the
+      // join timer recycles us, so the phone heals once the desktop reconnects.
+      if (awaitingRoomReady) {
+        if (raw !== null) {
+          const control = parseRelayControlFrame(raw)
+          if (control?.type === 'room-ready') {
+            awaitingRoomReady = false
+            if (relayJoinTimer) {
+              clearTimeout(relayJoinTimer)
+              relayJoinTimer = null
+            }
+            emitLog('success', 'Relay room ready', 'Starting E2EE handshake')
+            beginE2EEHandshake()
+            return
+          }
+          if (control?.type === 'host-offline') {
+            emitLog('warn', 'Host offline', 'Desktop not connected to the relay yet')
+            return
+          }
+        }
+        return
+      }
+
+      if (relayV2PreHandshake?.isAwaiting()) {
+        if (raw !== null) {
+          if (relayV2PreHandshake.handleText(raw)) {
+            return
+          }
+        }
+        return
+      }
 
       // Why: during handshaking, e2ee_ready is plaintext because it precedes
       // encrypted auth; e2ee_authenticated/e2ee_error are encrypted.
@@ -472,6 +583,9 @@ export function connect(
             console.log('[net] e2ee_authenticated — connected', {
               streamCount: streamListeners.size
             })
+            // Why: for relay links, WebSocket open only proves the relay is
+            // reachable. Reset backoff after E2EE auth proves the PC path works.
+            reconnectAttempt = 0
             setState('connected')
             emitLog('success', 'Authenticated', 'Channel ready for RPC')
             startActivityProbe()
@@ -674,7 +788,7 @@ export function connect(
       })
       lastWsClosedAt = closeAt
       currentWsOpenedAt = null
-      handleSocketClosed(openingWs)
+      handleSocketClosed(openingWs, { code: e?.code, reason: e?.reason })
     }
 
     ws.onerror = (event) => {
@@ -693,10 +807,14 @@ export function connect(
         eventKeys: errEvent.keys,
         eventStr: errEvent.json
       })
+      emitLog('error', 'WebSocket error', e?.message ?? errEvent.json)
     }
   }
 
-  function handleSocketClosed(closedWs: WebSocket, opts: { timedOut?: boolean } = {}) {
+  function handleSocketClosed(
+    closedWs: WebSocket,
+    opts: { timedOut?: boolean; code?: number; reason?: string } = {}
+  ) {
     if (ws !== closedWs) {
       console.log('[net] handleSocketClosed STALE — ignoring (ws already swapped)', {
         state,
@@ -714,11 +832,38 @@ export function connect(
       clearTimeout(handshakeTimer)
       handshakeTimer = null
     }
+    if (relayJoinTimer) {
+      clearTimeout(relayJoinTimer)
+      relayJoinTimer = null
+    }
+    relayV2PreHandshake?.clear()
+    relayV2PreHandshake = null
     stopActivityProbe()
     if (intentionallyClosed) {
       console.log('[net] handleSocketClosed — intentional close')
       setState('disconnected')
       rejectAllPending('Connection closed')
+      return
+    }
+    // Why: relay terminal close codes must NOT auto-reconnect. With supersede
+    // semantics two ends sharing a token would kick each other forever
+    // (4409 occupied), and a revoked token never recovers without a re-pair
+    // (4401 unauthorized). 4408 peer-recycled + transport codes fall through
+    // to the normal backoff reconnect below.
+    if (opts.code === RelayCloseCode.Occupied) {
+      console.log('[net] relay occupied — terminal, no reconnect')
+      emitLog('error', 'Connection taken over', 'This token is in use on another device')
+      intentionallyClosed = true
+      setState('occupied')
+      rejectAllPending('Connection taken over by another device')
+      return
+    }
+    if (opts.code === RelayCloseCode.Unauthorized) {
+      console.log('[net] relay unauthorized — terminal, re-pair')
+      emitLog('error', 'Pairing no longer valid', 'Re-pair on the PC')
+      intentionallyClosed = true
+      setState('auth-failed')
+      rejectAllPending('Unauthorized — pairing may be revoked')
       return
     }
     console.log('[net] handleSocketClosed → reconnect', {
@@ -727,7 +872,7 @@ export function connect(
       streamCount: streamListeners.size,
       attempt: reconnectAttempt
     })
-    emitLog('warn', 'WebSocket closed', 'Will attempt to reconnect')
+    emitLog('warn', 'WebSocket closed', websocketCloseLogDetail(opts.reason))
     rejectAllPending('Connection interrupted')
     setState('reconnecting')
     scheduleReconnect()
@@ -974,31 +1119,6 @@ export function connect(
 
   function recordValidatedInboundTraffic(): void {
     inboundSequence++
-  }
-
-  function handleBinaryFrame(bytes: Uint8Array): void {
-    const browserFrame = decodeBrowserScreencastFrame(bytes)
-    if (browserFrame) {
-      recordValidatedInboundTraffic()
-      handleBrowserBinaryFrame(browserFrame)
-      return
-    }
-    handleTerminalBinaryFrame(bytes, {
-      terminalSnapshots,
-      getListener: (streamId) => terminalStreamListeners.get(streamId),
-      recordValidatedInboundTraffic
-    })
-  }
-
-  function handleBrowserBinaryFrame(frame: BrowserScreencastFrame) {
-    if (!activeBrowserScreencastRequestId) {
-      return
-    }
-    const stream = streamListeners.get(activeBrowserScreencastRequestId)
-    if (!stream || stream.cancelled || stream.method !== 'browser.screencast') {
-      return
-    }
-    stream.onBinaryFrame?.(frame)
   }
 
   function sendEncrypted(request: unknown): boolean {
@@ -1255,6 +1375,12 @@ export function connect(
         clearTimeout(handshakeTimer)
         handshakeTimer = null
       }
+      if (relayJoinTimer) {
+        clearTimeout(relayJoinTimer)
+        relayJoinTimer = null
+      }
+      relayV2PreHandshake?.clear()
+      relayV2PreHandshake = null
       stopActivityProbe()
       if (ws) {
         ws.close()

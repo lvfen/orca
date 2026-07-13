@@ -5810,7 +5810,9 @@
           "aa1263e881": "スマートフォンサイズを維持（デフォルト）",
           "6436e56546": "モバイルペアリング用のQRコード",
           "1b1b70279a": "まだデバイスがペアリングされていません。",
-          "1592afcc7a": "まだデバイスがペアリングされていません。 Orca モバイル アプリで QR コードをスキャンします。"
+          "1592afcc7a": "まだデバイスがペアリングされていません。 Orca モバイル アプリで QR コードをスキャンします。",
+          "tabLan": "LAN WebSocket",
+          "tabRelay": "Remote Relay"
         },
         "MobileSettingsPane": {
           "9a3c280e49": "GitHub リリース",
@@ -7937,7 +7939,9 @@
               "4a0c826f3d": "コード",
               "3c1807a81a": "qr",
               "7fb728fb2b": "QR コードをスキャンしてモバイル デバイスをペアリングします。",
-              "d49925710a": "モバイルペアリング"
+              "d49925710a": "モバイルペアリング",
+              "relayTitle": "Remote Relay",
+              "relayDesc": "Connect to your phone through a self-hosted relay, with no inbound port or shared network."
             }
           },
           "settings": {
@@ -8977,6 +8981,33 @@
         "ephemeralVmsExperimentalSetting": {
           "description": "repo が所有するオンデマンド環境のセットアップ コントロールとワークスペース実行ターゲットを示します。",
           "toggleLabel": "ワークスペースごとの環境を切り替える"
+        },
+        "MobileRelaySection": {
+          "connected": "Connected",
+          "connecting": "Connecting…",
+          "reconnecting": "Reconnecting… (attempt {{attempt}})",
+          "occupied": "Taken over",
+          "unauthorized": "Pairing invalid",
+          "disconnected": "Not connected",
+          "occupiedHint": "Connection taken over — this token is in use on another device. Re-pair to reclaim it.",
+          "unauthorizedHint": "Pairing no longer valid — generate a fresh token on the relay and re-pair.",
+          "saved": "Relay token saved",
+          "invalidToken": "That relay invite is invalid",
+          "saveFailed": "Failed to save token",
+          "cleared": "Relay disconnected",
+          "clearFailed": "Failed to disconnect",
+          "copyFailed": "Failed to copy token",
+          "title": "Remote Relay",
+          "description": "Connect through a self-hosted relay to reach this computer from anywhere — no inbound port and no shared network. Paste the PC token printed by your relay server.",
+          "placeholder": "Paste relay invite or certificate token",
+          "connect": "Save & connect",
+          "phoneOnline": "Phone online",
+          "phoneOffline": "Waiting for phone",
+          "qrAlt": "Remote Relay QR for the Orca mobile app",
+          "qrCaption": "Scan this in the Orca mobile app after pasting its mobile token. It carries this computer’s identity so the relay can never impersonate it.",
+          "room": "Room",
+          "repair": "Disconnect / re-pair",
+          "qrDialogTitle": "Scan with Orca Mobile"
         },
         "SourceControlActionRepoOverrideNote": {
           "agent": "エージェント",

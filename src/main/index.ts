@@ -41,6 +41,7 @@ import { resolveConsent } from './telemetry/consent'
 import { triggerStartupNotificationRegistration } from './ipc/notifications'
 import { OrcaRuntimeService } from './runtime/orca-runtime'
 import { OrcaRuntimeRpcServer } from './runtime/runtime-rpc'
+import { loadRelayPcToken } from './runtime/relay-config-store'
 import { awaitRuntimeFileWatcherUnsubscribes } from './runtime/orca-runtime-files'
 import { clearRuntimeMetadataIfOwned } from './runtime/runtime-metadata'
 import { ensureMainI18n, setMainUiLanguage } from './i18n/main-i18n'
@@ -2036,6 +2037,10 @@ app.whenReady().then(async () => {
   // under the late app.getPath('userData') directory. Copy any missing files
   // forward before the runtime switches exclusively to the canonical path.
   migrateMobilePairingDataToCanonicalUserDataPath(app.getPath('userData'))
+  // Why: a previously-configured relay bridge token must redial automatically on
+  // launch so a remote phone reconnects without the user re-pasting it. E2E runs
+  // skip it to keep test instances isolated from any developer relay config.
+  const persistedRelayPcToken = isE2E ? null : loadRelayPcToken(getCanonicalUserDataPath())
   runtimeRpc = new OrcaRuntimeRpcServer({
     runtime,
     // Why: mobile pairing (DeviceRegistry + E2EE keypair + runtime metadata)
@@ -2047,6 +2052,7 @@ app.whenReady().then(async () => {
     ...(isE2E ? { wsPort: 0 } : {}),
     ...(devWsPort !== undefined ? { wsPort: devWsPort } : {}),
     ...(serveOptions?.wsPort !== undefined ? { wsPort: serveOptions.wsPort } : {}),
+    ...(persistedRelayPcToken ? { relayPcToken: persistedRelayPcToken } : {}),
     webClientRoot: getBundledWebClientRoot()
   })
   registerMobileHandlers(runtimeRpc)

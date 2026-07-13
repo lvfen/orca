@@ -19,6 +19,11 @@ const STORAGE_KEY = 'orca:hosts'
 // satisfying the validator.
 const TOKEN_KEY_PREFIX = 'orca.host-token.'
 const WEB_TOKEN_KEY_PREFIX = 'orca:web-host-token:'
+// Why: relay hosts carry a second bearer credential: v1 stores the mobileToken,
+// v2 stores the resumeToken. Keep it in the keychain alongside deviceToken so
+// it never lands in AsyncStorage.
+const RELAY_TOKEN_KEY_PREFIX = 'orca.host-relay-token.'
+const WEB_RELAY_TOKEN_KEY_PREFIX = 'orca:web-host-relay-token:'
 
 // Why: WHEN_UNLOCKED_THIS_DEVICE_ONLY keeps the pairing token off
 // iCloud Keychain and out of iCloud/iTunes backup restores onto a
@@ -34,6 +39,14 @@ function tokenKey(hostId: string): string {
 
 function webTokenKey(hostId: string): string {
   return `${WEB_TOKEN_KEY_PREFIX}${hostId}`
+}
+
+function relayTokenKey(hostId: string): string {
+  return `${RELAY_TOKEN_KEY_PREFIX}${hostId}`
+}
+
+function webRelayTokenKey(hostId: string): string {
+  return `${WEB_RELAY_TOKEN_KEY_PREFIX}${hostId}`
 }
 
 async function readDeviceToken(hostId: string): Promise<string | null> {
@@ -61,6 +74,29 @@ async function deleteDeviceToken(hostId: string): Promise<void> {
   await SecureStore.deleteItemAsync(tokenKey(hostId), KEYCHAIN_OPTIONS)
 }
 
+async function readRelayToken(hostId: string): Promise<string | null> {
+  if (Platform.OS === 'web') {
+    return AsyncStorage.getItem(webRelayTokenKey(hostId))
+  }
+  return SecureStore.getItemAsync(relayTokenKey(hostId), KEYCHAIN_OPTIONS)
+}
+
+async function writeRelayToken(hostId: string, token: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    await AsyncStorage.setItem(webRelayTokenKey(hostId), token)
+    return
+  }
+  await SecureStore.setItemAsync(relayTokenKey(hostId), token, KEYCHAIN_OPTIONS)
+}
+
+async function deleteRelayToken(hostId: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    await AsyncStorage.removeItem(webRelayTokenKey(hostId))
+    return
+  }
+  await SecureStore.deleteItemAsync(relayTokenKey(hostId), KEYCHAIN_OPTIONS)
+}
+
 // Why: SecureStore reads on Android Keystore can take 50-200ms each, and
 // loadHosts() is called from every screen mount + every useFocusEffect.
 // Stack with N hosts and you get N*200ms blocking every navigation, which
@@ -69,6 +105,7 @@ async function deleteDeviceToken(hostId: string): Promise<void> {
 // for the JS-runtime lifetime, which matches AsyncStorage semantics
 // (cleared on app uninstall, persisted across foreground/background).
 const tokenCache = new Map<string, string>()
+const relayTokenCache = new Map<string, string>()
 let inflightLoad: Promise<HostProfile[]> | null = null
 // Why: rename / lastConnected / remove / save all RMW the same hosts JSON.
 // Without a queue, concurrent writers re-read a stale snapshot and the last
@@ -192,7 +229,13 @@ function toStored(host: HostProfile): StoredHostProfile {
     name: host.name,
     endpoint: host.endpoint,
     publicKeyB64: host.publicKeyB64,
-    lastConnected: host.lastConnected
+    lastConnected: host.lastConnected,
+    kind: host.kind,
+    pcId: host.pcId,
+    mobileDeviceId: host.mobileDeviceId,
+    roomId: host.roomId,
+    resumeTokenExpiresAt: host.resumeTokenExpiresAt,
+    serverCaSha256: host.serverCaSha256
   }
 }
 
@@ -215,6 +258,10 @@ export async function saveHost(host: HostProfile): Promise<void> {
   // from current metadata.
   await writeDeviceToken(stored.id, validated.deviceToken)
   tokenCache.set(stored.id, validated.deviceToken)
+  if ((validated.kind === 'relay' || validated.kind === 'relay-v2') && validated.mobileToken) {
+    await writeRelayToken(stored.id, validated.mobileToken)
+    relayTokenCache.set(stored.id, validated.mobileToken)
+  }
 }
 
 export async function removeHost(hostId: string): Promise<void> {

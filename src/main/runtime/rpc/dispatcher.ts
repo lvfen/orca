@@ -12,7 +12,8 @@ import {
   type RpcEnvelopeMeta,
   type RpcRegistry,
   type RpcRequest,
-  type RpcResponse
+  type RpcResponse,
+  type RpcContext
 } from './core'
 import type { TerminalStreamFrame } from '../../../shared/terminal-stream-protocol'
 import type { FeatureInteractionId } from '../../../shared/feature-interactions'

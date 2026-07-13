@@ -877,7 +877,7 @@ describe('mobile rpc-client connection timeout', () => {
       // Three consecutive handshake rejections (AUTH_RETRY_BUDGET = 3).
       for (let i = 0; i < 3; i++) {
         if (i > 0) {
-          await vi.advanceTimersByTimeAsync(500)
+          await vi.advanceTimersByTimeAsync(i === 1 ? 500 : 1_000)
         }
         const socket = mockSockets[mockSockets.length - 1]!
         socket.open()
@@ -903,7 +903,7 @@ describe('mobile rpc-client connection timeout', () => {
         socket.receive(JSON.stringify({ type: 'e2ee_ready' }))
         socket.receive('encrypted:{"type":"e2ee_error","error":{"code":"unauthorized"}}')
       }
-      await vi.advanceTimersByTimeAsync(500)
+      await vi.advanceTimersByTimeAsync(1_000)
       authenticate(mockSockets[mockSockets.length - 1]!)
       expect(client.getState()).toBe('connected')
 

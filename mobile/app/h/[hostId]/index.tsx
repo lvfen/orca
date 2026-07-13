@@ -41,7 +41,7 @@ import {
   classifyConnection,
   type ConnectionVerdict
 } from '../../../src/transport/connection-health'
-import type { RpcSuccess } from '../../../src/transport/types'
+import type { HostProfile, RpcSuccess } from '../../../src/transport/types'
 import { StatusDot } from '../../../src/components/StatusDot'
 import { NewWorktreeModalController } from '../../../src/components/NewWorktreeModalController'
 import { NewWorkspaceFab, FAB_SIZE } from '../../../src/components/NewWorkspaceFab'
@@ -59,9 +59,11 @@ import { ProtocolBlockScreen } from '../../../src/components/ProtocolBlockScreen
 import { AuthFailedBanner } from '../../../src/components/AuthFailedBanner'
 import { MobileSearchField } from '../../../src/components/MobileSearchField'
 import { WorkspaceDetailPlaceholder } from '../../../src/components/WorkspaceDetailPlaceholder'
+import { RelayV2ReconnectBanner } from '../../../src/relay/relay-v2-reconnect-banner'
+import { resolveRelayV2ReconnectPresentation } from '../../../src/relay/relay-v2-reconnect-state-machine'
 import { getCachedWorktrees } from '../../../src/cache/worktree-cache'
 import { setCachedRepos } from '../../../src/cache/repo-cache'
-import { colors, radii, spacing, typography } from '../../../src/theme/mobile-theme'
+import { colors, spacing } from '../../../src/theme/mobile-theme'
 import { useResponsiveLayout } from '../../../src/layout/responsive-layout'
 import { leaveHostRoute } from '../../../src/host-route-exit'
 import { evaluateCompat, type CompatVerdict } from '../../../src/transport/protocol-compat'
@@ -96,6 +98,7 @@ import {
 import type { DesktopStatus, RepoSummary } from '../../../src/worktree/host-worktree-rpc-types'
 import type { WorkspaceStatusDefinition } from '../../../../src/shared/types'
 import { DEFAULT_MOBILE_WORKSPACE_STATUSES } from '../../../src/worktree/mobile-workspace-statuses'
+import { styles } from './host-worktree-list-styles'
 
 function isErrorVerdict(v: ConnectionVerdict): boolean {
   return v.kind === 'warning' || v.kind === 'unreachable' || v.kind === 'auth-failed'
@@ -161,6 +164,12 @@ export function HostScreen({
   const [repoColorsByName, setRepoColorsByName] = useState<Map<string, string>>(new Map())
   const [repoIconsByName, setRepoIconsByName] = useState<Map<string, RepoIcon>>(new Map())
   const [hostName, setHostName] = useState('')
+  // Why: the scan route can distinguish LAN and relay QR payloads, so repair
+  // affordances send users to one camera entry point.
+  const [hostKind, setHostKind] = useState<HostProfile['kind']>('lan')
+  const [relayV2ResumeTokenExpiresAt, setRelayV2ResumeTokenExpiresAt] = useState<number | null>(
+    null
+  )
   const [error, setError] = useState('')
   const [compatVerdict, setCompatVerdict] = useState<CompatVerdict>({ kind: 'ok' })
   const [lastKnownWorktrees, setLastKnownWorktrees] = useState<Worktree[]>(initialCache ?? [])
@@ -195,6 +204,18 @@ export function HostScreen({
   const leaveHost = useCallback(() => {
     leaveHostRoute(router)
   }, [router])
+  const relayV2ReconnectPresentation = useMemo(() => {
+    if (hostKind !== 'relay-v2') {
+      return null
+    }
+    return resolveRelayV2ReconnectPresentation({
+      state: connState,
+      reconnectAttempts,
+      lastConnectedAt,
+      resumeTokenExpiresAt: relayV2ResumeTokenExpiresAt,
+      nowMs: now
+    })
+  }, [hostKind, connState, reconnectAttempts, lastConnectedAt, relayV2ResumeTokenExpiresAt, now])
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set())
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
   // Why: snapshot of the synced view settings so the focus-effect ui.get merge
@@ -333,6 +354,7 @@ export function HostScreen({
 
   useEffect(() => {
     setHostName('')
+    setRelayV2ResumeTokenExpiresAt(null)
     setError('')
     setCompatVerdict({ kind: 'ok' })
     setRepoColorsByName(new Map())
@@ -365,6 +387,10 @@ export function HostScreen({
         return
       }
       setHostName(host.name)
+      setHostKind(host.kind)
+      setRelayV2ResumeTokenExpiresAt(
+        host.kind === 'relay-v2' ? (host.resumeTokenExpiresAt ?? null) : null
+      )
       void updateLastConnected(host.id)
     })
     return () => {
@@ -1125,11 +1151,28 @@ export function HostScreen({
         )}
       </View>
 
+      {relayV2ReconnectPresentation && (
+        <RelayV2ReconnectBanner
+          presentation={relayV2ReconnectPresentation}
+          onRetry={() => hostId && void forceReconnectHost(hostId)}
+          onRepair={() => router.push('/pair-scan')}
+          onRemove={() => setConfirmRemoveHost(true)}
+        />
+      )}
+
       {/* Auth failed banner */}
-      {connState === 'auth-failed' && (
+      {connState === 'auth-failed' && hostKind !== 'relay-v2' && (
         <AuthFailedBanner
           canRetry={!!hostId}
           onRetry={() => hostId && void forceReconnectHost(hostId)}
+          onRepair={() => router.push('/pair-scan')}
+          onRemove={() => setConfirmRemoveHost(true)}
+        />
+      )}
+
+      {/* Relay slot taken over (close code 4409) — terminal, no auto-reconnect */}
+      {connState === 'occupied' && hostKind !== 'relay-v2' && (
+        <OccupiedBanner
           onRepair={() => router.push('/pair-scan')}
           onRemove={() => setConfirmRemoveHost(true)}
         />
@@ -1228,7 +1271,7 @@ export function HostScreen({
               </Pressable>
             )
           }}
-          ItemSeparatorComponent={ListSeparator}
+          ItemSeparatorComponent={WorktreeListSeparator}
           renderItem={({ item }) => (
             <WorktreeListRow
               item={item}

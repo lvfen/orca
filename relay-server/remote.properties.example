@@ -1,0 +1,66 @@
+# Copy this file to remote.properties and fill in the real host/account values.
+# remote.properties is ignored by git because it may contain passwords.
+
+# Public relay endpoint. When this is an IP:port, deploy-remote derives
+# wss://<ip>:<port>, enables local certificate mode, uploads ./certs, and prints
+# an orca-cert_ token for Orca Mobile or desktop certificate installation.
+domain=203.0.113.10:6770
+
+# SSH/SFTP connection. scp.* aliases are also supported for these fields.
+# ssh.host is optional when the SSH target is the same host as domain.
+# ssh.host=203.0.113.10
+ssh.port=22
+ssh.username=ubuntu
+
+# Use either password auth:
+ssh.password=change-me
+
+# Or key auth:
+# ssh.privateKey=/Users/me/.ssh/id_ed25519
+# ssh.passphrase=
+# ssh.agent=/path/to/ssh-agent.sock
+
+# Remote install location. The deploy command creates releases/ and current/ here.
+remote.dir=/opt/orca-relay
+
+# Local build and remote install/start defaults can be overridden when needed.
+local.buildCommand=npm run build
+remote.installCommand=npm install --omit=dev --no-audit --no-fund
+remote.nodeCommand=node
+remote.pidFile=/opt/orca-relay/relay-server.pid
+remote.logFile=/opt/orca-relay/relay.log
+
+# Files copied from this relay-server directory into each remote release.
+# With domain=<ip>:<port>, deploy-remote appends certs automatically.
+upload.include=dist,package.json,pnpm-lock.yaml
+
+# Optional certificate controls. cert.mode defaults to local for IP domains and
+# none for DNS names. cert.host defaults to the domain host.
+# cert.mode=local
+# cert.outDir=certs
+# cert.host=203.0.113.10
+# cert.name=Orca Relay 203.0.113.10
+
+# Relay runtime environment written into the remote start command.
+relay.host=0.0.0.0
+relay.storePath=/opt/orca-relay/data/rooms.json
+# Optional relay v2 store/admin settings. v2StorePath defaults beside storePath.
+# Set adminToken to enable /admin/connections and revoke/disconnect endpoints.
+# relay.v2StorePath=/opt/orca-relay/data/relay-v2.json
+# relay.adminToken=replace-with-a-long-random-token
+relay.trustProxy=false
+relay.maxConnPerIpPerMin=60
+relay.maxConcurrentConnections=10000
+
+# Built-in TLS is optional for DNS/proxy deployments. For IP domains in local
+# certificate mode these paths are inferred under remote.dir/current/certs.
+# relay.tlsCertFile=/opt/orca-relay/current/certs/orca-relay-server.pem
+# relay.tlsKeyFile=/opt/orca-relay/current/certs/orca-relay-server-key.pem
+
+# Optional arbitrary RELAY_* overrides.
+# env.RELAY_PUBLIC_URL=wss://relay.example.com
+
+# Optional custom process manager commands. Available placeholders:
+# {remoteDir} {releasesDir} {releaseDir} {currentDir} {pidFile} {logFile} {env}
+# remote.stopCommand=systemctl --user stop orca-relay || true
+# remote.startCommand={env} systemctl --user start orca-relay

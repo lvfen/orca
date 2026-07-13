@@ -161,27 +161,30 @@ export function MobilePane(): React.JSX.Element {
 
   return (
     <div className="space-y-6">
-      <MobileNetworkInterfaceSection
-        networkInterfaces={networkInterfaces}
-        selectedAddress={selectedAddress}
-        onSelectedAddressChange={setSelectedAddress}
-        refreshingNetworkInterfaces={refreshingNetworkInterfaces}
-        onRefreshNetworkInterfaces={() => void loadNetworkInterfaces({ notifyOnError: true })}
-        loading={loading}
-        hasQrCode={qrDataUrl != null}
-        onGenerateQr={() => void generateQR({ rotate: qrDataUrl != null })}
-      />
+      {/* Why: two outbound paths to the phone — a direct LAN/tailnet WebSocket vs
+          a self-hosted relay (Goal 1). They share device/E2EE identity but need
+          different setup flows, so a segmented switch keeps each self-contained. */}
+      <Tabs defaultValue="lan">
+        <TabsList>
+          <TabsTrigger value="lan">
+            {translate('auto.components.settings.MobilePane.tabLan', 'LAN WebSocket')}
+          </TabsTrigger>
+          <TabsTrigger value="relay">
+            {translate('auto.components.settings.MobilePane.tabRelay', 'Remote Relay')}
+          </TabsTrigger>
+        </TabsList>
 
-      <MobilePairingQrSection
-        qrDataUrl={qrDataUrl}
-        pairingUrl={pairingUrl}
-        endpoint={endpoint}
-        qrEnlarged={qrEnlarged}
-        codeCopied={codeCopied}
-        onQrEnlargedChange={setQrEnlarged}
-        onCodeCopiedChange={setCodeCopied}
-        onClearCodeCopiedTimer={clearCodeCopiedResetTimer}
-      />
+        <TabsContent value="lan" className="space-y-6">
+          <MobileNetworkInterfaceSection
+            networkInterfaces={networkInterfaces}
+            selectedAddress={selectedAddress}
+            onSelectedAddressChange={setSelectedAddress}
+            refreshingNetworkInterfaces={refreshingNetworkInterfaces}
+            onRefreshNetworkInterfaces={() => void loadNetworkInterfaces({ notifyOnError: true })}
+            loading={loading}
+            hasQrCode={qrDataUrl != null}
+            onGenerateQr={() => void generateQR({ rotate: qrDataUrl != null })}
+          />
 
       <WindowsFirewallNotice pairingReady={qrDataUrl != null} address={selectedAddress} />
 

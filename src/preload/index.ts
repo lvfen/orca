@@ -83,6 +83,14 @@ import type { RuntimeRpcResponse } from '../shared/runtime-rpc-envelope'
 import type { PublicKnownRuntimeEnvironment } from '../shared/runtime-environments'
 import type { RemoteWorkspaceChangedEvent } from '../shared/remote-workspace-types'
 import type {
+  CreateInviteResult,
+  DesktopRelaySettings,
+  DesktopRelayV2Status,
+  InstallCertificateResult,
+  InstallDiscoveredCertificateResult,
+  SaveRelayUrlResult
+} from '../shared/relay-v2-desktop'
+import type {
   RuntimeMobileMarkdownRequest,
   RuntimeMobileMarkdownResponse
 } from '../shared/mobile-markdown-document'
@@ -4277,6 +4285,36 @@ const api = {
 
     isWebSocketReady: (): Promise<{ ready: boolean; endpoint: string | null }> =>
       ipcRenderer.invoke('mobile:isWebSocketReady')
+  },
+
+  mobileRelayV2: {
+    getSettings: (): Promise<DesktopRelaySettings> => ipcRenderer.invoke('mobile:v2:getSettings'),
+
+    saveRelayUrl: (args: { relayUrl: string }): Promise<SaveRelayUrlResult> =>
+      ipcRenderer.invoke('mobile:v2:saveRelayUrl', args),
+
+    clearSettings: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('mobile:v2:clearSettings'),
+
+    getStatus: (): Promise<DesktopRelayV2Status> => ipcRenderer.invoke('mobile:v2:getStatus'),
+
+    createInvite: (args: {
+      mode: 'keep-existing' | 'disconnect-existing'
+    }): Promise<CreateInviteResult> => ipcRenderer.invoke('mobile:v2:createInvite', args),
+
+    installCertificateToken: (args: { token: string }): Promise<InstallCertificateResult> =>
+      ipcRenderer.invoke('mobile:v2:installCertificateToken', args),
+
+    installDiscoveredCertificate: (args: {
+      relayUrl: string
+    }): Promise<InstallDiscoveredCertificateResult> =>
+      ipcRenderer.invoke('mobile:v2:installDiscoveredCertificate', args),
+
+    onStatusChanged: (callback: (status: DesktopRelayV2Status) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, status: DesktopRelayV2Status) =>
+        callback(status)
+      ipcRenderer.on('mobile:v2:statusChanged', listener)
+      return () => ipcRenderer.removeListener('mobile:v2:statusChanged', listener)
+    }
   },
 
   agentStatus: {

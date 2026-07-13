@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 export const PAIRING_OFFER_VERSION = 2
-const PairingScopeSchema = z.enum(['mobile', 'runtime'])
+const PairingScopeSchema = z.enum(['mobile', 'runtime', 'relay'])
 
 export const PairingOfferSchema = z.object({
   v: z.literal(PAIRING_OFFER_VERSION),

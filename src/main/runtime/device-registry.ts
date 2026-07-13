@@ -9,6 +9,10 @@ import { hardenExistingSecureFile, writeSecureJsonFile } from '../../shared/secu
 import type { DeviceScope } from '../../shared/runtime-types'
 import { DEVICE_REGISTRY_FILENAME } from './mobile-pairing-files'
 
+function normalizeScope(scope: unknown): DeviceScope {
+  return scope === 'runtime' || scope === 'relay' ? scope : 'mobile'
+}
+
 export type { DeviceScope }
 
 export type DeviceEntry = {
@@ -110,7 +114,7 @@ export class DeviceRegistry {
         ...device,
         // Why: older registries only existed for phone pairing. Treat missing
         // scope as mobile so legacy device tokens do not gain new CLI powers.
-        scope: device.scope === 'runtime' ? 'runtime' : 'mobile'
+        scope: normalizeScope(device.scope)
       }))
     } catch {
       this.devices = []

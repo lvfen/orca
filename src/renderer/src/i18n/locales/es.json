@@ -5788,7 +5788,9 @@
           "aa1263e881": "Mantener en tamaño de teléfono (predeterminado)",
           "6436e56546": "Código QR para emparejamiento móvil",
           "1b1b70279a": "Aún no hay dispositivos emparejados.",
-          "1592afcc7a": "Aún no hay dispositivos emparejados. Escanea el código QR con la aplicación móvil de Orca."
+          "1592afcc7a": "Aún no hay dispositivos emparejados. Escanea el código QR con la aplicación móvil de Orca.",
+          "tabLan": "LAN WebSocket",
+          "tabRelay": "Remote Relay"
         },
         "MobileSettingsPane": {
           "9a3c280e49": "GitHub Releases",
@@ -7915,7 +7917,9 @@
               "4a0c826f3d": "código",
               "3c1807a81a": "QR",
               "7fb728fb2b": "Empareje un dispositivo móvil escaneando un código QR.",
-              "d49925710a": "Emparejamiento móvil"
+              "d49925710a": "Emparejamiento móvil",
+              "relayTitle": "Remote Relay",
+              "relayDesc": "Connect to your phone through a self-hosted relay, with no inbound port or shared network."
             }
           },
           "settings": {
@@ -8977,6 +8981,33 @@
         "ephemeralVmsExperimentalSetting": {
           "description": "Muestra controles de configuración y destinos de ejecución de espacios de trabajo para entornos bajo demanda del repositorio.",
           "toggleLabel": "Activar o desactivar entornos por espacio de trabajo"
+        },
+        "MobileRelaySection": {
+          "connected": "Connected",
+          "connecting": "Connecting…",
+          "reconnecting": "Reconnecting… (attempt {{attempt}})",
+          "occupied": "Taken over",
+          "unauthorized": "Pairing invalid",
+          "disconnected": "Not connected",
+          "occupiedHint": "Connection taken over — this token is in use on another device. Re-pair to reclaim it.",
+          "unauthorizedHint": "Pairing no longer valid — generate a fresh token on the relay and re-pair.",
+          "saved": "Relay token saved",
+          "invalidToken": "That relay invite is invalid",
+          "saveFailed": "Failed to save token",
+          "cleared": "Relay disconnected",
+          "clearFailed": "Failed to disconnect",
+          "copyFailed": "Failed to copy token",
+          "title": "Remote Relay",
+          "description": "Connect through a self-hosted relay to reach this computer from anywhere — no inbound port and no shared network. Paste the PC token printed by your relay server.",
+          "placeholder": "Paste relay invite or certificate token",
+          "connect": "Save & connect",
+          "phoneOnline": "Phone online",
+          "phoneOffline": "Waiting for phone",
+          "qrAlt": "Remote Relay QR for the Orca mobile app",
+          "qrCaption": "Scan this in the Orca mobile app after pasting its mobile token. It carries this computer’s identity so the relay can never impersonate it.",
+          "room": "Room",
+          "repair": "Disconnect / re-pair",
+          "qrDialogTitle": "Scan with Orca Mobile"
         },
         "SourceControlActionRepoOverrideNote": {
           "agent": "Agente",

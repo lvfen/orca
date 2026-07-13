@@ -1,6 +1,9 @@
 import { app, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { networkInterfaces } from 'node:os'
 import QRCode from 'qrcode'
+import { decodeRelayCertificateToken } from '../../shared/relay-certificate-token'
+import type { DesktopRelayV2Status } from '../../shared/relay-v2-desktop'
+import { encodeRelayV2InviteQrPayload } from '../../shared/relay-v2-invite-qr'
 import type { RuntimeAccessGrant } from '../../shared/runtime-access-grants'
 import { isTailnetIPv4Address } from '../../shared/tailnet-address'
 import type { DeviceEntry } from '../runtime/device-registry'
@@ -16,6 +19,8 @@ export type NetworkInterface = {
   name: string
   address: string
 }
+
+const execFileAsync = promisify(execFile)
 
 // Why: the WebSocket transport advertises 0.0.0.0 as its endpoint, which isn't
 // connectable from a mobile device. We enumerate all non-internal IPv4

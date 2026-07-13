@@ -152,7 +152,8 @@ export default function PairConfirmScreen() {
         endpoint: offer.endpoint,
         deviceToken: offer.deviceToken,
         publicKeyB64: offer.publicKeyB64,
-        lastConnected: Date.now()
+        lastConnected: Date.now(),
+        kind: 'lan'
       })
       if (!mountedRef.current) {
         return

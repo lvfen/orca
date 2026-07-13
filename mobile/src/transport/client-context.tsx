@@ -25,6 +25,7 @@ import { subscribeConnectionRevivalTriggers } from './connection-revival-trigger
 import { HostClientOpenRegistry } from './host-client-open-registry'
 import { loadHosts } from './host-store'
 import type { ConnectionState, HostProfile } from './types'
+import { resolveRelayConnectOptions } from './relay-connect-options'
 
 type StoreEntry = {
   client: RpcClient
