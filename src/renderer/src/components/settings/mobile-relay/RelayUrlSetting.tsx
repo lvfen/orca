@@ -55,7 +55,7 @@ export function RelayUrlSetting({
             onChange={(event) => onRelayUrlInputChange(event.target.value)}
             placeholder={translate(
               'auto.components.settings.mobileRelay.urlPlaceholder',
-              'relay.example.com or 49.51.37.225:6770'
+              'wss://relay.example.com or wss://203.0.113.10:6770'
             )}
             spellCheck={false}
             autoCapitalize="off"

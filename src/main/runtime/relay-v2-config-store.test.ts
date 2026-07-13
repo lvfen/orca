@@ -4,7 +4,7 @@ import { normalizeRelayV2Url } from './relay-v2-config-store'
 describe('normalizeRelayV2Url', () => {
   it('accepts bare relay addresses and defaults them to wss', () => {
     expect(normalizeRelayV2Url('relay.example.com')).toBe('wss://relay.example.com/')
-    expect(normalizeRelayV2Url('49.51.37.225:6770')).toBe('wss://49.51.37.225:6770/')
+    expect(normalizeRelayV2Url('203.0.113.10:6770')).toBe('wss://203.0.113.10:6770/')
   })
 
   it('keeps explicit websocket schemes and maps http schemes to websocket schemes', () => {
