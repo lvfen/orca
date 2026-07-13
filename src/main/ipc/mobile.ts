@@ -211,12 +211,14 @@ export function registerMobileHandlers(rpcServer: OrcaRuntimeRpcServer): void {
   })
 
   ipcMain.handle('mobile:v2:getSettings', () => rpcServer.getRelayV2Settings())
-
-  ipcMain.handle('mobile:v2:saveRelayUrl', async (_event, args: { relayUrl: string }) => {
-    const relayUrl = typeof args?.relayUrl === 'string' ? args.relayUrl.trim() : ''
-    return rpcServer.saveRelayV2Url(relayUrl)
-  })
-
+  ipcMain.handle(
+    'mobile:v2:saveRelayUrl',
+    (_event, args: { relayUrl: string; accessToken?: string }) =>
+      rpcServer.saveRelayV2Url(
+        typeof args?.relayUrl === 'string' ? args.relayUrl.trim() : '',
+        typeof args?.accessToken === 'string' ? args.accessToken : undefined
+      )
+  )
   ipcMain.handle('mobile:v2:clearSettings', async () => {
     await rpcServer.clearRelayV2Settings()
     return { ok: true as const }

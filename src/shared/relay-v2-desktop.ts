@@ -17,6 +17,7 @@ export type DesktopRelaySettings = {
   relayUrl: string | null
   pcId: string | null
   pcName: string
+  hasAccessToken: boolean
 }
 
 export type DesktopRelayV2Status = {
@@ -32,7 +33,7 @@ export type DesktopRelayV2Status = {
 
 export type SaveRelayUrlResult =
   | { ok: true; settings: DesktopRelaySettings; status: DesktopRelayV2Status }
-  | { ok: false; reason: 'invalid-url'; status: DesktopRelayV2Status }
+  | { ok: false; reason: 'invalid-url' | 'missing-access-token'; status: DesktopRelayV2Status }
 
 export type RelayV2CreatedInvite = Omit<ChannelCreatedMessage, 'type'> & {
   qrPayload: RelayInviteV2Payload

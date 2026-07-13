@@ -15,6 +15,7 @@ export type RelayConfig = {
   publicUrl: string
   storePath: string
   v2StorePath?: string
+  accessToken: string
   adminToken?: string
   certificateDiscovery?: RelayCertificateDiscovery
   // Why: optional built-in TLS. Production typically terminates TLS at a
@@ -50,6 +51,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RelayConfig {
   const tlsCert = readOptionalFile(tlsCertFile)
   const tlsKey = readOptionalFile(tlsKeyFile)
   const adminToken = env.RELAY_ADMIN_TOKEN?.trim()
+  const accessToken = env.RELAY_ACCESS_TOKEN?.trim()
+  if (!accessToken) {
+    throw new Error('RELAY_ACCESS_TOKEN is required')
+  }
   const certificateDiscovery = loadCertificateDiscovery(env, tlsCertFile)
   const maxConnectionsPerIpPerMinute =
     parsePositiveInt(env.RELAY_MAX_CONN_PER_IP_PER_MIN) ??
@@ -66,6 +71,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RelayConfig {
     publicUrl,
     storePath,
     v2StorePath,
+    accessToken,
     maxConnectionsPerIpPerMinute,
     maxConcurrentConnections,
     trustProxy

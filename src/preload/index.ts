@@ -4064,7 +4064,7 @@ const api = {
   mobileRelayV2: {
     getSettings: (): Promise<DesktopRelaySettings> => ipcRenderer.invoke('mobile:v2:getSettings'),
 
-    saveRelayUrl: (args: { relayUrl: string }): Promise<SaveRelayUrlResult> =>
+    saveRelayUrl: (args: { relayUrl: string; accessToken?: string }): Promise<SaveRelayUrlResult> =>
       ipcRenderer.invoke('mobile:v2:saveRelayUrl', args),
 
     clearSettings: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('mobile:v2:clearSettings'),

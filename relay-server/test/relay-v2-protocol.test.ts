@@ -15,6 +15,7 @@ describe('relay v2 protocol', () => {
           pcId: 'pc_1',
           pcName: 'MacBook Pro',
           pcSecret: 'secret',
+          accessToken: 'test-access-token',
           publicKeyB64: 'pub'
         })
       )
@@ -24,6 +25,7 @@ describe('relay v2 protocol', () => {
       pcId: 'pc_1',
       pcName: 'MacBook Pro',
       pcSecret: 'secret',
+      accessToken: 'test-access-token',
       publicKeyB64: 'pub'
     })
 

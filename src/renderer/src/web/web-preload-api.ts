@@ -697,7 +697,8 @@ function createWebPreloadApi(): Partial<PreloadApi> {
         Promise.resolve({
           relayUrl: null,
           pcId: null,
-          pcName: WEB_RELAY_V2_STATUS_UNAVAILABLE.pcName
+          pcName: WEB_RELAY_V2_STATUS_UNAVAILABLE.pcName,
+          hasAccessToken: false
         }),
       saveRelayUrl: () =>
         Promise.resolve({

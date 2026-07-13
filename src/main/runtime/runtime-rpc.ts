@@ -583,15 +583,19 @@ export class OrcaRuntimeRpcServer {
     return () => this.relayV2StatusListeners.delete(listener)
   }
 
-  async saveRelayV2Url(relayUrl: string): Promise<SaveRelayUrlResult> {
+  async saveRelayV2Url(relayUrl: string, accessToken?: string): Promise<SaveRelayUrlResult> {
     const normalized = normalizeRelayV2Url(relayUrl)
     if (!normalized) {
       return { ok: false, reason: 'invalid-url', status: this.getRelayV2Status() }
     }
     const existing = this.relayV2Config
+    const normalizedAccessToken = accessToken?.trim() || existing?.accessToken
+    if (!normalizedAccessToken) {
+      return { ok: false, reason: 'missing-access-token', status: this.getRelayV2Status() }
+    }
     const config = existing
-      ? { ...existing, relayUrl: normalized }
-      : createRelayV2Config(normalized)
+      ? { ...existing, relayUrl: normalized, accessToken: normalizedAccessToken }
+      : createRelayV2Config(normalized, normalizedAccessToken)
     this.relayV2Config = config
     saveRelayV2Config(this.userDataPath, config)
     await this.startRelayV2Transport(config)
@@ -830,6 +834,7 @@ export class OrcaRuntimeRpcServer {
       pcId: config.pcId,
       pcName: config.pcName,
       pcSecret: config.pcSecret,
+      accessToken: config.accessToken,
       publicKeyB64,
       serverCaDerB64: config.serverCaDerB64
     })

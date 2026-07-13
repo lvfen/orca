@@ -37,6 +37,7 @@ export class RelayV2Transport implements RpcTransport, MobileTransport {
   private readonly pcId: string
   private readonly pcName: string
   private readonly pcSecret: string
+  private readonly accessToken: string
   private readonly publicKeyB64: string
   private readonly serverCaDerB64: string | null
   private readonly reconnectDelaysMs: number[]
@@ -60,6 +61,7 @@ export class RelayV2Transport implements RpcTransport, MobileTransport {
     this.pcId = options.pcId
     this.pcName = options.pcName
     this.pcSecret = options.pcSecret
+    this.accessToken = options.accessToken
     this.publicKeyB64 = options.publicKeyB64
     this.serverCaDerB64 = options.serverCaDerB64 ?? null
     this.reconnectDelaysMs = options.reconnectDelaysMs ?? RECONNECT_DELAYS_MS
@@ -166,7 +168,8 @@ export class RelayV2Transport implements RpcTransport, MobileTransport {
           pcId: this.pcId,
           pcName: this.pcName,
           pcSecret: this.pcSecret,
-          publicKeyB64: this.publicKeyB64
+          publicKeyB64: this.publicKeyB64,
+          accessToken: this.accessToken
         })
       )
     })

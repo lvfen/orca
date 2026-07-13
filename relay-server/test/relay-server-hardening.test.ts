@@ -39,7 +39,13 @@ describe('RelayServer hardening', () => {
 
   async function startServer(overrides: Partial<RelayServerOptions> = {}): Promise<RelayServer> {
     const next = new RelayServer({
-      config: { host: '127.0.0.1', port: 0, publicUrl: 'ws://localhost', storePath },
+      config: {
+        host: '127.0.0.1',
+        port: 0,
+        publicUrl: 'ws://localhost',
+        storePath,
+        accessToken: 'test-access-token'
+      },
       store,
       heartbeatIntervalMs: 200,
       preJoinTimeoutMs: 5_000,

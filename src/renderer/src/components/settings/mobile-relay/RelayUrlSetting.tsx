@@ -6,12 +6,14 @@ import { translate } from '@/i18n/i18n'
 
 type Props = {
   relayUrlInput: string
+  accessTokenInput: string
   certificateTokenInput: string
   settings: DesktopRelaySettings | null
   status: DesktopRelayV2Status | null
   saving: boolean
   installingCertificate: boolean
   onRelayUrlInputChange: (value: string) => void
+  onAccessTokenInputChange: (value: string) => void
   onCertificateTokenInputChange: (value: string) => void
   onSaveRelayUrl: () => void
   onClearSettings: () => void
@@ -20,18 +22,23 @@ type Props = {
 
 export function RelayUrlSetting({
   relayUrlInput,
+  accessTokenInput,
   certificateTokenInput,
   settings,
   status,
   saving,
   installingCertificate,
   onRelayUrlInputChange,
+  onAccessTokenInputChange,
   onCertificateTokenInputChange,
   onSaveRelayUrl,
   onClearSettings,
   onInstallCertificate
 }: Props): React.JSX.Element {
-  const canSave = relayUrlInput.trim().length > 0 && !saving
+  const canSave =
+    relayUrlInput.trim().length > 0 &&
+    (settings?.hasAccessToken === true || accessTokenInput.trim().length > 0) &&
+    !saving
   const canInstallCertificate = certificateTokenInput.trim().length > 0 && !installingCertificate
   const configured = Boolean(settings?.relayUrl)
 
@@ -69,6 +76,32 @@ export function RelayUrlSetting({
             </Button>
           )}
         </div>
+      </div>
+
+      <div className="space-y-1">
+        <label className="text-sm font-medium" htmlFor="relay-v2-access-token">
+          {translate('auto.components.settings.mobileRelay.accessTokenLabel', 'Access token')}
+        </label>
+        <Input
+          id="relay-v2-access-token"
+          type="password"
+          value={accessTokenInput}
+          onChange={(event) => onAccessTokenInputChange(event.target.value)}
+          placeholder={
+            settings?.hasAccessToken
+              ? translate(
+                  'auto.components.settings.mobileRelay.accessTokenSaved',
+                  'Saved — leave blank to keep it'
+                )
+              : translate(
+                  'auto.components.settings.mobileRelay.accessTokenPlaceholder',
+                  'Token configured on the relay server'
+                )
+          }
+          autoComplete="new-password"
+          spellCheck={false}
+          className="font-mono text-xs"
+        />
       </div>
 
       {status?.state === 'certificate-required' && (

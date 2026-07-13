@@ -137,6 +137,7 @@ describe('RelayServer admin and certificate discovery', () => {
         port: 0,
         publicUrl: 'wss://relay.example.test',
         storePath,
+        accessToken: 'test-access-token',
         v2StorePath: join(dir, 'relay-v2.json'),
         ...(config.adminToken ? { adminToken: config.adminToken } : {}),
         ...(config.certificateDiscovery
@@ -163,6 +164,7 @@ describe('RelayServer admin and certificate discovery', () => {
         pcId: 'pc_1',
         pcName: 'MacBook Pro',
         pcSecret: 'pc-secret',
+        accessToken: 'test-access-token',
         publicKeyB64: 'pc-public-key'
       })
     )

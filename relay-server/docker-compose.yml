@@ -12,6 +12,9 @@ services:
       RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-wss://relay.example.com}
       RELAY_HOST: 0.0.0.0
       RELAY_PORT: 6770
+      # Required shared credential for PC registration. Keep it out of source
+      # control and provide it through the deployment's .env/secret manager.
+      RELAY_ACCESS_TOKEN: ${RELAY_ACCESS_TOKEN:?RELAY_ACCESS_TOKEN is required}
       RELAY_STORE_PATH: /data/rooms.json
       # Why: Caddy fronts the relay, so every socket's peer address is Caddy's
       # internal IP. Trust X-Forwarded-For (Caddy sets it) so per-IP rate limiting

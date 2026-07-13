@@ -87,6 +87,25 @@ describe('RelayServer v2 runtime', () => {
     expect(Array.from((await mobile.nextMessage()).binary ?? [])).toEqual([9, 8, 7])
   })
 
+  it('rejects a PC without the server access token before registering its identity', async () => {
+    const pc = newClient()
+    await pc.open()
+    pc.send(
+      JSON.stringify({
+        type: 'pc-hello',
+        v: RELAY_V2_PROTOCOL_VERSION,
+        pcId: 'pc_intruder',
+        pcName: 'Intruder',
+        pcSecret: 'self-issued-secret',
+        accessToken: 'wrong-access-token',
+        publicKeyB64: 'self-issued-key'
+      })
+    )
+
+    expect((await pc.waitClose()).code).toBe(RelayCloseCode.Unauthorized)
+    expect(v2Store.getPc('pc_intruder')).toBeNull()
+  })
+
   it('keeps independent PC/mobile channels isolated', async () => {
     const pc1 = await connectPc('pc_1', 'MacBook Pro')
     const pc2 = await connectPc('pc_2', 'Linux Workstation')
@@ -210,7 +229,8 @@ describe('RelayServer v2 runtime', () => {
         host: '127.0.0.1',
         port: 0,
         publicUrl: 'wss://relay.example.test',
-        storePath
+        storePath,
+        accessToken: 'test-access-token'
       },
       store: new RoomStore(storePath),
       v2Store,
@@ -254,6 +274,7 @@ describe('RelayServer v2 runtime', () => {
         pcId,
         pcName,
         pcSecret: `secret-${pcId}`,
+        accessToken: 'test-access-token',
         publicKeyB64: `pub-${pcId}`
       })
     )

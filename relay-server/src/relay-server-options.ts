@@ -3,6 +3,7 @@ import type { RoomStore } from './room-store.js'
 import type { RelayV2Store } from './v2/relay-v2-store.js'
 
 export type RelayV2RuntimeTuning = {
+  accessToken?: string
   channelInviteTtlMs?: number
   resumeTokenTtlMs?: number
   mobileReconnectGraceMs?: number

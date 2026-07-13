@@ -153,6 +153,7 @@ function newTransport(extra?: {
     pcId: 'pc_1',
     pcName: 'MacBook Pro',
     pcSecret: 'secret-pc-1',
+    accessToken: 'test-access-token',
     publicKeyB64: 'public-key',
     reconnectDelaysMs: [10, 10, 10],
     connectTimeoutMs: 1_000,
@@ -181,6 +182,7 @@ describe('RelayV2Transport', () => {
       pcId: 'pc_1',
       pcName: 'MacBook Pro',
       pcSecret: 'secret-pc-1',
+      accessToken: 'test-access-token',
       publicKeyB64: 'public-key'
     })
     expect(t.getStatus().mobile).toBeNull()

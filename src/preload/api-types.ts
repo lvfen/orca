@@ -2959,7 +2959,7 @@ export type PreloadApi = {
   }
   mobileRelayV2: {
     getSettings: () => Promise<DesktopRelaySettings>
-    saveRelayUrl: (args: { relayUrl: string }) => Promise<SaveRelayUrlResult>
+    saveRelayUrl: (args: { relayUrl: string; accessToken?: string }) => Promise<SaveRelayUrlResult>
     clearSettings: () => Promise<{ ok: boolean }>
     getStatus: () => Promise<DesktopRelayV2Status>
     createInvite: (args: {

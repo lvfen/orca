@@ -36,12 +36,14 @@ import {
   type RelayV2RuntimeOptions
 } from './relay-v2-runtime-options.js'
 import type { RelayV2Store } from './relay-v2-store.js'
+import { tokensEqual } from '../token.js'
 
 export type { RelayV2SocketState } from './relay-v2-socket.js'
 
 export class RelayV2Runtime {
   private readonly store: RelayV2Store
   private readonly publicUrl: string
+  private readonly accessToken: string
   private readonly channelInviteTtlMs: number
   private readonly resumeTokenTtlMs: number
   private readonly serverCaSha256: string
@@ -53,6 +55,7 @@ export class RelayV2Runtime {
   constructor(options: RelayV2RuntimeOptions) {
     this.store = options.store
     this.publicUrl = options.publicUrl
+    this.accessToken = options.accessToken
     this.channelInviteTtlMs = options.channelInviteTtlMs ?? DEFAULT_CHANNEL_INVITE_TTL_MS
     this.resumeTokenTtlMs = options.resumeTokenTtlMs ?? DEFAULT_RESUME_TOKEN_TTL_MS
     this.serverCaSha256 = options.serverCaSha256 ?? UNAVAILABLE_CERT_VALUE
@@ -127,6 +130,12 @@ export class RelayV2Runtime {
     message: PcHelloMessage,
     meta: RelayV2InitialConnectionMeta
   ): RelayV2SocketState | null {
+    // Why: pcSecret authenticates an existing PC identity, but a shared relay
+    // access token is required before any caller may register a new identity.
+    if (!tokensEqual(message.accessToken, this.accessToken)) {
+      closeWithCode(ws, RelayCloseCode.Unauthorized, 'unauthorized')
+      return null
+    }
     const existing = this.store.getPc(message.pcId)
     if (existing && !this.store.verifyPcSecret(message.pcId, message.pcSecret)) {
       closeWithCode(ws, RelayCloseCode.Unauthorized, 'unauthorized')
