@@ -18,6 +18,7 @@ export type RelayV2TransportOptions = {
   pcId: string
   pcName: string
   pcSecret: string
+  accessToken: string
   publicKeyB64: string
   serverCaDerB64?: string
   reconnectDelaysMs?: number[]

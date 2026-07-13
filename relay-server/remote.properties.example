@@ -59,6 +59,8 @@ relay.maxConcurrentConnections=10000
 
 # Optional arbitrary RELAY_* overrides.
 # env.RELAY_PUBLIC_URL=wss://relay.example.com
+# Required: shared secret that every PC must present in its initial relay handshake.
+# env.RELAY_ACCESS_TOKEN=replace-with-a-long-random-secret
 
 # Optional custom process manager commands. Available placeholders:
 # {remoteDir} {releasesDir} {releaseDir} {currentDir} {pidFile} {logFile} {env}

@@ -31,6 +31,7 @@ export type PcHelloMessage = {
   pcName: string
   pcSecret: string
   publicKeyB64: string
+  accessToken: string
 }
 
 export type ChannelCreateMessage = {

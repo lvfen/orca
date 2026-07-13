@@ -2081,10 +2081,7 @@ export type PreloadApi = {
      *  IPC — call sparingly. */
     getSync: () => GlobalSettings | null
     set: (args: Partial<GlobalSettings>) => Promise<GlobalSettings>
-    updatePRBotAuthorOverride: (args: {
-      author: string
-      isBot: boolean
-    }) => Promise<GlobalSettings>
+    updatePRBotAuthorOverride: (args: { author: string; isBot: boolean }) => Promise<GlobalSettings>
     listFonts: () => Promise<string[]>
     previewGhosttyImport: () => Promise<GhosttyImportPreview>
     previewWarpThemeImport: (source: WarpThemeImportSource) => Promise<WarpThemeImportPreview>
@@ -3176,7 +3173,7 @@ export type PreloadApi = {
   }
   mobileRelayV2: {
     getSettings: () => Promise<DesktopRelaySettings>
-    saveRelayUrl: (args: { relayUrl: string }) => Promise<SaveRelayUrlResult>
+    saveRelayUrl: (args: { relayUrl: string; accessToken?: string }) => Promise<SaveRelayUrlResult>
     clearSettings: () => Promise<{ ok: boolean }>
     getStatus: () => Promise<DesktopRelayV2Status>
     createInvite: (args: {

@@ -3,6 +3,7 @@ import type { RelayV2Store } from './relay-v2-store.js'
 export type RelayV2RuntimeOptions = {
   store: RelayV2Store
   publicUrl: string
+  accessToken: string
   channelInviteTtlMs?: number
   resumeTokenTtlMs?: number
   mobileReconnectGraceMs?: number

@@ -81,7 +81,7 @@ export function isRelayInviteV2Payload(value: unknown): value is RelayInviteV2Pa
 function parsePcHello(value: Record<string, unknown>): PcHelloMessage | null {
   if (
     value.v !== RELAY_V2_PROTOCOL_VERSION ||
-    !hasNonEmptyStrings(value, ['pcId', 'pcName', 'pcSecret', 'publicKeyB64'])
+    !hasNonEmptyStrings(value, ['pcId', 'pcName', 'pcSecret', 'publicKeyB64', 'accessToken'])
   ) {
     return null
   }
@@ -91,7 +91,8 @@ function parsePcHello(value: Record<string, unknown>): PcHelloMessage | null {
     pcId: value.pcId,
     pcName: value.pcName,
     pcSecret: value.pcSecret,
-    publicKeyB64: value.publicKeyB64
+    publicKeyB64: value.publicKeyB64,
+    accessToken: value.accessToken
   }
 }
 

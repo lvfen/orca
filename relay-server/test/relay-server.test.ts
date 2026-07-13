@@ -21,7 +21,13 @@ describe('RelayServer end-to-end', () => {
     store = new RoomStore(storePath)
     room = store.createPair('ws://localhost', 'my-mac')
     server = new RelayServer({
-      config: { host: '127.0.0.1', port: 0, publicUrl: 'ws://localhost', storePath },
+      config: {
+        host: '127.0.0.1',
+        port: 0,
+        publicUrl: 'ws://localhost',
+        storePath,
+        accessToken: 'test-access-token'
+      },
       store,
       // Why: aggressive heartbeat + short pre-join window so the timeout cases
       // resolve fast; clients auto-pong so they stay alive across sweeps.

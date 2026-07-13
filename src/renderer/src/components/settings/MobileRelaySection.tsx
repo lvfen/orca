@@ -24,6 +24,7 @@ export function MobileRelaySection(): React.JSX.Element {
   const [settings, setSettings] = useState<DesktopRelaySettings | null>(null)
   const [status, setStatus] = useState<DesktopRelayV2Status | null>(null)
   const [relayUrlInput, setRelayUrlInput] = useState('')
+  const [accessTokenInput, setAccessTokenInput] = useState('')
   const [certificateTokenInput, setCertificateTokenInput] = useState('')
   const [savingRelayUrl, setSavingRelayUrl] = useState(false)
   const [installingCertificate, setInstallingCertificate] = useState(false)
@@ -102,7 +103,10 @@ export function MobileRelaySection(): React.JSX.Element {
     autoCertificateInstallAttemptRef.current = null
     setSavingRelayUrl(true)
     try {
-      const result = await window.api.mobileRelayV2.saveRelayUrl({ relayUrl })
+      const result = await window.api.mobileRelayV2.saveRelayUrl({
+        relayUrl,
+        accessToken: accessTokenInput.trim() || undefined
+      })
       if (!mountedRef.current) {
         return
       }
@@ -116,6 +120,7 @@ export function MobileRelaySection(): React.JSX.Element {
       setSettings(result.settings)
       setStatus(result.status)
       setRelayUrlInput(result.settings.relayUrl ?? '')
+      setAccessTokenInput('')
       toast.success(translate('auto.components.settings.mobileRelay.urlSaved', 'Relay URL saved'))
     } catch {
       if (mountedRef.current) {
@@ -139,6 +144,7 @@ export function MobileRelaySection(): React.JSX.Element {
       setSettings(null)
       setStatus(await window.api.mobileRelayV2.getStatus())
       setRelayUrlInput('')
+      setAccessTokenInput('')
       setInvite(null)
       autoCertificateInstallAttemptRef.current = null
       toast.success(
@@ -340,12 +346,14 @@ export function MobileRelaySection(): React.JSX.Element {
         <div className="space-y-4">
           <RelayUrlSetting
             relayUrlInput={relayUrlInput}
+            accessTokenInput={accessTokenInput}
             certificateTokenInput={certificateTokenInput}
             settings={settings}
             status={status}
             saving={savingRelayUrl}
             installingCertificate={installingCertificate}
             onRelayUrlInputChange={setRelayUrlInput}
+            onAccessTokenInputChange={setAccessTokenInput}
             onCertificateTokenInputChange={setCertificateTokenInput}
             onSaveRelayUrl={() => void saveRelayUrl()}
             onClearSettings={() => void clearSettings()}

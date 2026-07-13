@@ -214,6 +214,7 @@ available in those commands: `{remoteDir}`, `{releasesDir}`, `{releaseDir}`,
 | `RELAY_PORT`                                 | `6770`                     | listen port                                                                                                                 |
 | `RELAY_HOST`                                 | `0.0.0.0`                  | listen host                                                                                                                 |
 | `RELAY_PUBLIC_URL`                           | `ws://localhost:<port>`    | public `wss://` URL baked into tokens                                                                                       |
+| `RELAY_ACCESS_TOKEN`                         | —                          | **required** shared secret presented by each PC during `pc-hello`; generate a long random value and keep it out of source control |
 | `RELAY_STORE_PATH`                           | `~/.orca-relay/rooms.json` | hardened (0600) room/token store                                                                                            |
 | `RELAY_V2_STORE_PATH`                        | beside `RELAY_STORE_PATH`  | relay v2 PC/channel/mobile metadata store                                                                                   |
 | `RELAY_ADMIN_TOKEN`                          | —                          | enables bearer-authenticated `/admin/*` endpoints                                                                           |

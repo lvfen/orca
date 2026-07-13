@@ -6,7 +6,7 @@ import type { DesktopRelaySettings } from '../../shared/relay-v2-desktop'
 import { hardenExistingSecureFile, writeSecureJsonFile } from '../../shared/secure-file'
 
 const RELAY_V2_CONFIG_FILENAME = 'orca-relay-v2-config.json'
-const RELAY_V2_CONFIG_VERSION = 1
+const RELAY_V2_CONFIG_VERSION = 2
 const MAX_RELAY_V2_CONFIG_FILE_BYTES = 16 * 1024
 
 export type RelayV2Config = {
@@ -15,6 +15,7 @@ export type RelayV2Config = {
   pcId: string
   pcSecret: string
   pcName: string
+  accessToken: string
   serverCaDerB64?: string
 }
 
@@ -50,6 +51,7 @@ export function clearRelayV2Config(userDataPath: string): void {
 
 export function createRelayV2Config(
   relayUrl: string,
+  accessToken: string,
   pcName = defaultRelayV2PcName()
 ): RelayV2Config {
   return {
@@ -57,7 +59,8 @@ export function createRelayV2Config(
     relayUrl,
     pcId: `pc_${randomBytes(12).toString('base64url')}`,
     pcSecret: randomBytes(32).toString('base64url'),
-    pcName
+    pcName,
+    accessToken
   }
 }
 
@@ -65,7 +68,8 @@ export function toDesktopRelaySettings(config: RelayV2Config | null): DesktopRel
   return {
     relayUrl: config?.relayUrl ?? null,
     pcId: config?.pcId ?? null,
-    pcName: config?.pcName ?? defaultRelayV2PcName()
+    pcName: config?.pcName ?? defaultRelayV2PcName(),
+    hasAccessToken: Boolean(config?.accessToken)
   }
 }
 
@@ -115,6 +119,8 @@ function isRelayV2Config(value: unknown): value is RelayV2Config {
     candidate.pcSecret.length > 0 &&
     typeof candidate.pcName === 'string' &&
     candidate.pcName.length > 0 &&
+    typeof candidate.accessToken === 'string' &&
+    candidate.accessToken.length > 0 &&
     (candidate.serverCaDerB64 === undefined ||
       (typeof candidate.serverCaDerB64 === 'string' && candidate.serverCaDerB64.length > 0))
   )

@@ -82,6 +82,7 @@ export class RelayServer {
       ? new RelayV2Runtime({
           store: options.v2Store,
           publicUrl: this.config.publicUrl,
+          accessToken: options.relayV2?.accessToken ?? this.config.accessToken,
           ...options.relayV2
         })
       : null

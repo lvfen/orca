@@ -159,7 +159,7 @@ function printUsage(): void {
       '  relay-server revoke-channel <channelId>',
       '  relay-server revoke-mobile <mobileDeviceId>',
       '',
-      'Env: RELAY_PORT, RELAY_HOST, RELAY_PUBLIC_URL, RELAY_STORE_PATH,',
+      'Env: RELAY_PORT, RELAY_HOST, RELAY_PUBLIC_URL, RELAY_STORE_PATH, RELAY_ACCESS_TOKEN,',
       '     RELAY_TLS_CERT_FILE, RELAY_TLS_KEY_FILE,',
       '     RELAY_MAX_CONN_PER_IP_PER_MIN, RELAY_MAX_CONCURRENT_CONNECTIONS, RELAY_TRUST_PROXY',
       '',

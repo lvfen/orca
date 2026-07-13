@@ -172,6 +172,7 @@ relay.trustProxy=false
 | `RELAY_PORT`                                 | `6770`                         | 监听端口                                                                                  |
 | `RELAY_HOST`                                 | `0.0.0.0`                      | 监听地址                                                                                  |
 | `RELAY_PUBLIC_URL`                           | `ws://localhost:<port>`        | 写入 token 的公网 `wss://` URL                                                            |
+| `RELAY_ACCESS_TOKEN`                         | —                              | **必填**；PC 在 `pc-hello` 中提交的共享密钥。请生成足够长的随机值并且不要提交到代码仓库       |
 | `RELAY_STORE_PATH`                           | `~/.orca-relay/rooms.json`     | room/token 存储文件，权限加固为 0600                                                      |
 | `RELAY_V2_STORE_PATH`                        | 位于 `RELAY_STORE_PATH` 同目录 | relay v2 PC/channel/mobile 元数据 store                                                   |
 | `RELAY_ADMIN_TOKEN`                          | —                              | 启用 Bearer 鉴权的 `/admin/*` 接口                                                        |
